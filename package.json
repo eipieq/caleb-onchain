@@ -1,0 +1,25 @@
+{
+  "name": "caleb-onchain",
+  "version": "0.1.0",
+  "description": "Verifiable AI DCA agent on Initia — every decision committed on-chain",
+  "type": "module",
+  "scripts": {
+    "agent": "node src/agent/index.js",
+    "verify": "node src/verify/index.js",
+    "deploy": "npx hardhat run src/scripts/deploy.js",
+    "dev": "cd frontend && npm run dev"
+  },
+  "dependencies": {
+    "chalk": "^5.3.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.0",
+    "openai": "^4.47.0"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "hardhat": "^2.22.5"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

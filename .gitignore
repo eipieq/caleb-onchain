@@ -1,0 +1,24 @@
+# env
+.env
+
+# deps
+node_modules/
+frontend/node_modules/
+
+# hardhat
+cache/
+artifacts/
+
+# sessions (contain hashed decisions — keep locally, never commit)
+sessions/
+
+# build
+frontend/dist/
+frontend/.next/
+
+# misc
+.DS_Store
+*.log
+.env1
+.agents/
+skills-lock.json
