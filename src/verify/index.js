@@ -1,3 +1,21 @@
+/**
+ * @file verify/index.js
+ * Offline verification tool — proves the local session records match what is
+ * stored on-chain.
+ *
+ * For each step in a session file the verifier:
+ *   1. Recomputes keccak256(canonicalJSON(payload)) locally.
+ *   2. Fetches the stored hash from the DecisionLog contract.
+ *   3. Compares the two. A mismatch means the local file was altered after
+ *      the session was committed — a clear sign of tampering.
+ *
+ * Usage:
+ *   npm run verify                          # verify all sessions
+ *   npm run verify -- --session <sessionId> # verify one session
+ *
+ * Exit code 0 = all hashes matched. Non-zero = at least one mismatch.
+ */
+
 import "dotenv/config";
 import { readFileSync, readdirSync } from "fs";
 import { join, dirname } from "path";

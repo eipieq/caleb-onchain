@@ -1,3 +1,19 @@
+/**
+ * @file chain/client.js
+ * Thin EVM wrapper around the DecisionLog smart contract.
+ *
+ * Every agent session is a sequence of exactly 5 on-chain commits:
+ *   POLICY (0) → MARKET (1) → DECISION (2) → CHECK (3) → EXECUTION (4)
+ *
+ * Each step stores a keccak256 hash of its JSON payload. The hash is computed
+ * deterministically (sorted keys) so the verify script can recompute it
+ * offline and compare against the on-chain value to prove the local record
+ * was not tampered with after the fact.
+ *
+ * The contract also supports peer attestations — third-party addresses can
+ * call attest() to publicly vouch for a session's integrity.
+ */
+
 import { ethers } from "ethers";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -29,6 +45,10 @@ function loadAbi() {
   }
 }
 
+/**
+ * Numeric step kinds as expected by the DecisionLog contract.
+ * Must stay in sync with the `StepKind` enum in DecisionLog.sol.
+ */
 export const STEP_KIND = {
   POLICY:    0,
   MARKET:    1,
@@ -38,20 +58,37 @@ export const STEP_KIND = {
 };
 
 export class ChainClient {
+  /**
+   * @param {object} opts
+   * @param {string} opts.rpcUrl          - Initia EVM JSON-RPC endpoint
+   * @param {string} opts.privateKey      - Agent wallet private key (hex, with 0x prefix)
+   * @param {string} opts.contractAddress - Deployed DecisionLog contract address
+   */
   constructor({ rpcUrl, privateKey, contractAddress }) {
     this.provider = new ethers.JsonRpcProvider(rpcUrl);
     this.wallet   = new ethers.Wallet(privateKey, this.provider);
     this.contract = new ethers.Contract(contractAddress, loadAbi(), this.wallet);
   }
 
-  // deterministic session id: keccak256(agent address + timestamp)
+  /**
+   * Deterministic session ID: keccak256(abi.encode(agentAddress, timestamp)).
+   * Using the agent address means session IDs are scoped per wallet, avoiding
+   * collisions when multiple agents share the same contract.
+   */
   static makeSessionId(agentAddress, timestamp) {
     return ethers.keccak256(
       ethers.AbiCoder.defaultAbiCoder().encode(["address", "uint256"], [agentAddress, timestamp])
     );
   }
 
-  // canonical hash for a step payload — must match verify exactly
+  /**
+   * Canonical payload hash used by both the agent (when committing) and the
+   * verifier (when auditing). Keys are sorted alphabetically before
+   * serialisation so the hash is stable regardless of object insertion order.
+   *
+   * @param {object} payload - Step payload object
+   * @returns {string} 0x-prefixed keccak256 hex string
+   */
   static hashPayload(payload) {
     const json = JSON.stringify(payload, Object.keys(payload).sort());
     return ethers.keccak256(ethers.toUtf8Bytes(json));

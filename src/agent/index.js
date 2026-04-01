@@ -1,3 +1,24 @@
+/**
+ * @file agent/index.js
+ * Main entry point for a single agent cycle (one DCA session).
+ *
+ * Each invocation runs the full 5-step pipeline and commits each step to the
+ * DecisionLog contract on Initia:
+ *
+ *   STEP 0  POLICY    — broadcast the operating constraints for this cycle
+ *   STEP 1  MARKET    — fetch and commit the current price/portfolio snapshot
+ *   STEP 2  DECISION  — call Venice AI for a BUY/SKIP verdict
+ *   STEP 3  CHECK     — run all six policy gates against the decision
+ *   STEP 4  EXECUTION — execute the swap (or record why it was skipped)
+ *
+ * The session record is also written to sessions/<sessionId>.json so the API
+ * server and frontend can display it without hitting the chain.
+ *
+ * Run on the VPS (not locally) when using a remote RPC — the guard at the
+ * top of this file enforces that to prevent the session file from being
+ * saved in the wrong place.
+ */
+
 import "dotenv/config";
 import { writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
@@ -37,6 +58,12 @@ function saveSession(sessionId, record) {
   return path;
 }
 
+/**
+ * Execute one full agent cycle and return the completed session record.
+ *
+ * @param {object} [policy] - Override the default policy (useful for testing)
+ * @returns {Promise<object>} The finalized session record
+ */
 async function runCycle(policy = DEFAULT_POLICY) {
   const chain = new ChainClient({
     rpcUrl:          process.env.INITIA_RPC_URL,

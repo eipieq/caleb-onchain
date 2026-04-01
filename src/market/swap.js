@@ -1,3 +1,16 @@
+/**
+ * @file market/swap.js
+ * Executes token swaps on the Initia EVM via a Uniswap v2-compatible router.
+ *
+ * Flow:
+ *   1. Policy CHECK must have passed and AI verdict must not be SKIP.
+ *   2. If SIMULATE=true, the swap is dry-run and no transaction is sent.
+ *   3. Otherwise: quote → slippage-guard → swap → wait for receipt.
+ *
+ * All swaps go USDC → target token (buy-only for now). The USDC amount is
+ * derived from the AI's `amountUsd` field, converted using the current price.
+ */
+
 import { ethers } from "ethers";
 
 // minimal swap router ABI — uniswap v2 style, works on initia EVM
@@ -16,6 +29,15 @@ const TOKEN_ADDRESSES = {
 const ROUTER   = process.env.SWAP_ROUTER_ADDRESS || "0x0000000000000000000000000000000000000010";
 const SLIPPAGE = parseInt(process.env.SLIPPAGE_BPS || "50"); // 0.5%
 
+/**
+ * Execute a swap based on the AI decision and policy check results.
+ *
+ * @param {object} ai     - DECISION step payload (verdict, token, amountUsd, confidence)
+ * @param {object} check  - CHECK step payload (passed, blockedBy)
+ * @param {object} market - MARKET step payload (prices, portfolio)
+ * @param {object} policy - Active policy config
+ * @returns {Promise<object>} EXECUTION step payload
+ */
 export async function executeSwap(ai, check, market, policy) {
   const ts = Math.floor(Date.now() / 1000);
 
@@ -27,50 +49,61 @@ export async function executeSwap(ai, check, market, policy) {
     return { executed: false, reason: "AI verdict: SKIP", verdict: "SKIP", timestamp: ts };
   }
 
+  const token = ai.token.toUpperCase();
+  const side  = ai.side ?? ai.verdict; // "BUY" or "SELL"
+  const price = market.prices[token] ?? 0;
+
   if (process.env.SIMULATE === "true") {
-    const token = ai.token.toUpperCase();
-    const price = market.prices[token] ?? 0;
     return {
       executed:  true,
       simulated: true,
       token,
+      side,
       amountUsd: ai.amountUsd,
       price,
-      summary:   `[simulated] BUY $${ai.amountUsd} of ${token} @ $${price}`,
+      summary:   `[simulated] ${side} $${ai.amountUsd.toFixed(2)} of ${token} @ $${price}`,
       timestamp: ts,
     };
   }
 
   try {
-    const provider = new ethers.JsonRpcProvider(process.env.INITIA_RPC_URL);
-    const wallet   = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
-    const router   = new ethers.Contract(ROUTER, SWAP_ROUTER_ABI, wallet);
+    const provider  = new ethers.JsonRpcProvider(process.env.INITIA_RPC_URL);
+    const wallet    = new ethers.Wallet(process.env.PRIVATE_KEY, provider);
+    const router    = new ethers.Contract(ROUTER, SWAP_ROUTER_ABI, wallet);
 
-    const token     = ai.token.toUpperCase();
     const tokenAddr = TOKEN_ADDRESSES[token];
     if (!tokenAddr) throw new Error(`no address configured for ${token}`);
 
-    const price     = market.prices[token];
-    const tokenAmt  = ai.amountUsd / price;
-    const amountIn  = ethers.parseUnits(tokenAmt.toFixed(6), 6); // USDC = 6 decimals
-    const path      = [TOKEN_ADDRESSES.USDC, tokenAddr];
-    const deadline  = ts + 300;
+    const deadline = ts + 300;
+    let path, amountIn, amountsOut, amountOutMin, tx, receipt;
 
-    const amountsOut   = await router.getAmountsOut(amountIn, path);
-    const amountOutMin = (amountsOut[1] * BigInt(10000 - SLIPPAGE)) / 10000n;
+    if (side === "BUY") {
+      // USDC → token
+      const tokenAmt = ai.amountUsd / price;
+      amountIn       = ethers.parseUnits(tokenAmt.toFixed(6), 6);
+      path           = [TOKEN_ADDRESSES.USDC, tokenAddr];
+    } else {
+      // token → USDC
+      const tokenAmt = ai.amountUsd / price;
+      amountIn       = ethers.parseUnits(tokenAmt.toFixed(6), 18); // most tokens = 18 decimals
+      path           = [tokenAddr, TOKEN_ADDRESSES.USDC];
+    }
 
-    const tx      = await router.swapExactTokensForTokens(amountIn, amountOutMin, path, wallet.address, deadline);
-    const receipt = await tx.wait();
+    amountsOut   = await router.getAmountsOut(amountIn, path);
+    amountOutMin = (amountsOut[1] * BigInt(10000 - SLIPPAGE)) / 10000n;
+    tx           = await router.swapExactTokensForTokens(amountIn, amountOutMin, path, wallet.address, deadline);
+    receipt      = await tx.wait();
 
     return {
       executed:    true,
       simulated:   false,
       token,
+      side,
       amountUsd:   ai.amountUsd,
       price,
       swapTxHash:  receipt.hash,
       blockNumber: receipt.blockNumber,
-      summary:     `BUY $${ai.amountUsd} of ${token} @ $${price} — tx ${receipt.hash}`,
+      summary:     `${side} $${ai.amountUsd.toFixed(2)} of ${token} @ $${price} — tx ${receipt.hash}`,
       timestamp:   ts,
     };
   } catch (err) {

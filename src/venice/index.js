@@ -1,3 +1,18 @@
+/**
+ * @file venice/index.js
+ * AI decision engine powered by Venice (OpenAI-compatible API).
+ *
+ * Venice is used for the DECISION step (STEP 2) of each session. The LLM
+ * receives the current market snapshot and operating policy, then returns a
+ * structured verdict: BUY or SKIP, with a target token, USD amount, confidence
+ * score, and plain-English reasoning.
+ *
+ * Latency note: a Venice round-trip typically takes 2–5 seconds. This is
+ * acceptable for hourly DCA cycles but would be a bottleneck for HFT. For
+ * high-frequency strategies, replace this with a rule-based decision module
+ * and reserve Venice for strategy-level (slow) reasoning only.
+ */
+
 import OpenAI from "openai";
 
 // venice is openai-compatible — drop-in swap
@@ -27,6 +42,14 @@ Respond ONLY with valid JSON matching this exact schema:
   "reasoning": "<2-3 sentences explaining your decision>"
 }`;
 
+/**
+ * Ask the LLM to analyse the current market and return a trading decision.
+ *
+ * @param {object} market - MARKET step payload (prices, portfolio, allowedTokens)
+ * @param {object} policy - Active policy config (maxSpendUsd, allowedTokens, confidenceThreshold)
+ * @returns {Promise<{verdict, token, amountUsd, confidence, reasoning, model, timestamp}>}
+ * @throws if the response JSON is malformed or contains an unrecognised verdict
+ */
 export async function getAiDecision(market, policy) {
   const prompt = `Current market snapshot:
 ${JSON.stringify(market, null, 2)}

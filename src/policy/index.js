@@ -1,13 +1,41 @@
-// six-gate policy engine — all gates must pass for a swap to run
+/**
+ * @file policy/index.js
+ * Six-gate policy engine that runs as STEP 3 (CHECK) of every session.
+ *
+ * Gates are evaluated in parallel and ALL must pass for a swap to execute.
+ * Each gate returns a {name, passed, reason} object so the on-chain record
+ * shows exactly which constraint was satisfied or violated.
+ *
+ * Gate summary:
+ *   spendLimit         — swap amount ≤ policy.maxSpendUsd
+ *   tokenWhitelist     — token is in policy.allowedTokens
+ *   confidenceThreshold — AI confidence ≥ policy.confidenceThreshold
+ *   cooldown           — no executed swap within the last policy.cooldownSeconds
+ *   verdictValid       — verdict is one of the recognised enum values
+ *   marketSanity       — a positive price exists for the target token
+ */
 
-export async function runPolicyCheck(ai, market, policy, prevSteps) {
+/**
+ * Run all policy gates against the current decision and market data.
+ *
+ * @param {object}      ai        - DECISION step payload
+ * @param {object}      market    - MARKET step payload
+ * @param {object}      policy    - Active policy config
+ * @param {object[]}    prevSteps - Earlier steps (used for cooldown in DCA mode)
+ * @param {object|null} position  - Current open position (used for drawdown gate)
+ * @returns {Promise<{passed, blockedBy, gates, timestamp}>}
+ */
+export async function runPolicyCheck(ai, market, policy, prevSteps = [], position = null, portfolio = null) {
   const gates = await Promise.all([
     gate_spendLimit(ai, policy),
     gate_tokenWhitelist(ai, policy),
-    gate_confidenceThreshold(ai, policy),
+    gate_signalStrength(ai, policy),
     gate_cooldown(prevSteps, policy),
     gate_verdict(ai),
     gate_marketSanity(market, ai),
+    gate_maxPosition(ai, policy, position),
+    gate_maxDrawdown(ai, policy, position, market),
+    gate_availableBalance(ai, portfolio),
   ]);
 
   const passed    = gates.every((g) => g.passed);
@@ -43,14 +71,21 @@ function gate_tokenWhitelist(ai, policy) {
   };
 }
 
-function gate_confidenceThreshold(ai, policy) {
-  const passed = ai.confidence >= policy.confidenceThreshold;
+/**
+ * Signal strength gate — replaces the LLM-specific confidenceThreshold gate.
+ * For rule-based strategies, `confidence` is the normalised signal strength
+ * [0–1] returned by the strategy's decide() function.
+ */
+function gate_signalStrength(ai, policy) {
+  if (ai.verdict === "SKIP") return { name: "signalStrength", passed: true, reason: "skip" };
+  const threshold = policy.confidenceThreshold ?? 0;
+  const passed    = ai.confidence >= threshold;
   return {
-    name:   "confidenceThreshold",
+    name:   "signalStrength",
     passed,
     reason: passed
-      ? `confidence ${ai.confidence} ≥ threshold ${policy.confidenceThreshold}`
-      : `confidence ${ai.confidence} < threshold ${policy.confidenceThreshold}`,
+      ? `signal ${ai.confidence.toFixed(3)} ≥ threshold ${threshold}`
+      : `signal ${ai.confidence.toFixed(3)} < threshold ${threshold}`,
   };
 }
 
@@ -70,11 +105,72 @@ function gate_cooldown(prevSteps, policy) {
 }
 
 function gate_verdict(ai) {
-  const passed = ["BUY", "SKIP"].includes(ai.verdict);
+  const passed = ["BUY", "SELL", "SKIP"].includes(ai.verdict);
   return {
     name:   "verdictValid",
     passed,
     reason: passed ? `verdict "${ai.verdict}" is valid` : `unknown verdict "${ai.verdict}"`,
+  };
+}
+
+/**
+ * Prevent opening a position that would exceed the max total exposure.
+ * Only applies to BUY verdicts — SELL always passes (closing reduces risk).
+ */
+function gate_maxPosition(ai, policy, position) {
+  if (ai.verdict !== "BUY" || !policy.maxPositionUsd) {
+    return { name: "maxPosition", passed: true, reason: "n/a" };
+  }
+  const current = position?.sizeUsd ?? 0;
+  const after   = current + ai.amountUsd;
+  const passed  = after <= policy.maxPositionUsd;
+  return {
+    name:   "maxPosition",
+    passed,
+    reason: passed
+      ? `position after trade $${after.toFixed(2)} ≤ limit $${policy.maxPositionUsd}`
+      : `position after trade $${after.toFixed(2)} would exceed limit $${policy.maxPositionUsd}`,
+  };
+}
+
+/**
+ * Ensure the portfolio has enough USDC to fund the trade.
+ * Only relevant for BUY orders — SELL never requires USDC.
+ */
+function gate_availableBalance(ai, portfolio) {
+  if (ai.verdict !== "BUY" || !portfolio) {
+    return { name: "availableBalance", passed: true, reason: "n/a" };
+  }
+  const available = portfolio.availableUsd();
+  const passed    = available >= ai.amountUsd;
+  return {
+    name:   "availableBalance",
+    passed,
+    reason: passed
+      ? `USDC balance $${available.toFixed(2)} ≥ order $${ai.amountUsd.toFixed(2)}`
+      : `insufficient USDC: $${available.toFixed(2)} < $${ai.amountUsd.toFixed(2)}`,
+  };
+}
+
+/**
+ * Halt trading if the open position is down more than maxDrawdownPct.
+ * Only checked when there is an open position and the signal is a BUY
+ * (adding to a losing position is the main risk here).
+ */
+function gate_maxDrawdown(ai, policy, position, market) {
+  if (!policy.maxDrawdownPct || !position || ai.verdict === "SKIP") {
+    return { name: "maxDrawdown", passed: true, reason: "n/a" };
+  }
+  const price  = (market.prices ?? {})[position.token];
+  if (!price)  return { name: "maxDrawdown", passed: true, reason: "no price for drawdown check" };
+  const pnlPct = (price - position.entryPrice) / position.entryPrice * 100;
+  const passed = pnlPct > -policy.maxDrawdownPct;
+  return {
+    name:   "maxDrawdown",
+    passed,
+    reason: passed
+      ? `drawdown ${pnlPct.toFixed(2)}% within limit -${policy.maxDrawdownPct}%`
+      : `drawdown ${pnlPct.toFixed(2)}% exceeds limit -${policy.maxDrawdownPct}% — halting`,
   };
 }
 

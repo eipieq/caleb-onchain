@@ -1,3 +1,16 @@
+/**
+ * @file market/index.js
+ * Fetches price and portfolio data for the agent's market snapshot (STEP 1).
+ *
+ * Price sources, in priority order:
+ *   1. Initia on-chain oracle  — authoritative for INIT pairs, fast, no rate-limit
+ *   2. CoinGecko public API    — fallback for tokens not yet listed on the oracle
+ *
+ * The merged price map always prefers the on-chain value when both sources have
+ * data for the same symbol, so oracle manipulation would need to compromise
+ * the Initia validator set rather than just the CoinGecko feed.
+ */
+
 const INITIA_API = "https://rest.testnet.initia.xyz";
 
 // coingecko ids for fallback pricing
@@ -8,6 +21,11 @@ const CG_IDS = {
   BTC:  "bitcoin",
 };
 
+/**
+ * Fetch JSON from a URL with a hard timeout. Returns the parsed body or throws.
+ * @param {string} url
+ * @param {number} timeoutMs
+ */
 async function fetchJson(url, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -66,6 +84,13 @@ async function fetchPortfolio(address) {
   }
 }
 
+/**
+ * Build a market snapshot for the current cycle.
+ * Fires all three fetches in parallel to minimise latency.
+ *
+ * @param {string[]} allowedTokens - e.g. ["INIT", "ETH", "USDC"]
+ * @returns {Promise<{prices, portfolio, allowedTokens, fetchedAt, sources}>}
+ */
 export async function fetchMarketData(allowedTokens) {
   const [initia, cg, portfolio] = await Promise.all([
     fetchInitiaPrices(allowedTokens),

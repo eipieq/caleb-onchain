@@ -1,3 +1,17 @@
+/**
+ * @file scripts/deploy.js
+ * One-shot deployment script for the DecisionLog contract.
+ *
+ * Prerequisites:
+ *   - Hardhat compilation must have run first: npx hardhat compile
+ *   - INITIA_RPC_URL and PRIVATE_KEY must be set in .env
+ *
+ * After deployment, copy the printed DECISION_LOG_ADDRESS into your .env.
+ * The contract is not upgradeable — redeploy if the ABI changes.
+ *
+ * Run with: node src/scripts/deploy.js
+ */
+
 import "dotenv/config";
 import { ethers } from "ethers";
 import { readFileSync } from "fs";

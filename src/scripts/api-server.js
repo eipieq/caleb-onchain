@@ -1,5 +1,25 @@
-// api server for the frontend dashboard
-// run with: node src/scripts/api-server.js
+/**
+ * @file scripts/api-server.js
+ * Lightweight HTTP API that bridges the frontend dashboard to session files
+ * and the DecisionLog contract. No framework dependencies — plain Node http.
+ *
+ * Endpoints:
+ *   GET  /api/sessions               — list all sessions (newest first)
+ *   GET  /api/sessions/:id           — fetch one session by ID
+ *   GET  /api/verify/:id             — recompute & compare hashes vs on-chain
+ *   POST /api/recover/:id            — rebuild session from on-chain events (if local file missing)
+ *   GET  /api/attestations/:id       — list third-party attestations for a session
+ *   GET  /api/policy                 — read the current runtime policy override
+ *   POST /api/policy                 — write a new runtime policy override
+ *   GET  /api/portfolio              — current portfolio state (balance, holdings, P&L)
+ *
+ * On startup, autoRecover() scans the contract for sessions that have no
+ * corresponding local file and rebuilds them from StepCommitted events.
+ * This means redeploying or clearing the sessions/ directory is non-destructive
+ * as long as the chain data is intact.
+ *
+ * Run with: node src/scripts/api-server.js
+ */
 
 import "dotenv/config";
 import { createServer } from "http";
@@ -7,12 +27,14 @@ import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ethers } from "ethers";
+import { fetchMarketData } from "../market/index.js";
 
 import { ChainClient } from "../chain/client.js";
 
-const __dirname    = dirname(fileURLToPath(import.meta.url));
-const SESSIONS_DIR = join(__dirname, "../../sessions");
-const POLICY_FILE  = join(__dirname, "../../policy.json");
+const __dirname       = dirname(fileURLToPath(import.meta.url));
+const SESSIONS_DIR    = join(__dirname, "../../sessions");
+const POLICY_FILE     = join(__dirname, "../../policy.json");
+const PORTFOLIO_FILE  = join(__dirname, "../../data/portfolio.json");
 const PORT         = parseInt(process.env.API_PORT || "4000");
 
 const chain = new ChainClient({
@@ -52,6 +74,13 @@ function hashPayload(payload) {
 
 const STEP_KINDS = ["POLICY", "MARKET", "DECISION", "CHECK", "EXECUTION"];
 
+/**
+ * Rebuild a session record from on-chain StepCommitted events.
+ * Used when the local sessions/ file is missing (e.g. after a redeploy).
+ * The recovered record is written to disk so subsequent reads are fast.
+ *
+ * @param {string} sessionId - 0x-prefixed bytes32 session ID
+ */
 async function recoverSession(sessionId) {
   // fetch StepCommitted events filtered by sessionId from chain
   const filter = chain.contract.filters.StepCommitted(sessionId);
@@ -151,6 +180,55 @@ const server = createServer(async (req, res) => {
     try {
       const attestations = await chain.getAttestations(attestationsMatch[1]);
       return json(res, { sessionId: attestationsMatch[1], attestations, count: attestations.length });
+    } catch (err) {
+      return json(res, { error: err.message }, 500);
+    }
+  }
+
+  if (req.method === "GET" && url === "/api/portfolio") {
+    try {
+      if (!existsSync(PORTFOLIO_FILE)) return json(res, { error: "portfolio not initialised — run the agent first" }, 404);
+      const state  = JSON.parse(readFileSync(PORTFOLIO_FILE, "utf8"));
+      const tokens = Object.keys(state.holdings ?? {}).concat(["INIT", "ETH", "USDC"]);
+      // mark to market with live prices (best-effort, fall back to entry prices on failure)
+      let prices = {};
+      try { ({ prices } = await fetchMarketData(tokens)); } catch {}
+      // compute current values
+      let holdingsUsd = 0;
+      const holdings  = {};
+      for (const [token, h] of Object.entries(state.holdings ?? {})) {
+        const currentPrice = prices[token] ?? h.avgEntryPrice;
+        const currentUsd   = h.amount * currentPrice;
+        const unrealisedUsd = currentUsd - h.totalCostUsd;
+        holdingsUsd += currentUsd;
+        holdings[token] = {
+          amount:        parseFloat(h.amount.toFixed(6)),
+          avgEntryPrice: parseFloat(h.avgEntryPrice.toFixed(6)),
+          costUsd:       parseFloat(h.totalCostUsd.toFixed(4)),
+          currentPrice:  parseFloat(currentPrice.toFixed(6)),
+          currentUsd:    parseFloat(currentUsd.toFixed(4)),
+          unrealisedUsd: parseFloat(unrealisedUsd.toFixed(4)),
+          unrealisedPct: h.totalCostUsd > 0 ? parseFloat(((unrealisedUsd / h.totalCostUsd) * 100).toFixed(2)) : 0,
+        };
+      }
+      const totalValueUsd = state.usdcBalance + holdingsUsd;
+      const totalPnlUsd   = totalValueUsd - state.startingBalanceUsd;
+      return json(res, {
+        startingBalanceUsd: state.startingBalanceUsd,
+        usdcBalance:        parseFloat(state.usdcBalance.toFixed(4)),
+        holdings,
+        totalValueUsd:      parseFloat(totalValueUsd.toFixed(4)),
+        totalPnlUsd:        parseFloat(totalPnlUsd.toFixed(4)),
+        totalPnlPct:        parseFloat(((totalPnlUsd / state.startingBalanceUsd) * 100).toFixed(2)),
+        realisedPnlUsd:     parseFloat(state.realisedPnlUsd.toFixed(4)),
+        unrealisedPnlUsd:   parseFloat((holdingsUsd - Object.values(state.holdings ?? {}).reduce((s, h) => s + h.totalCostUsd, 0)).toFixed(4)),
+        tradesTotal:        state.tradesTotal,
+        winningTrades:      state.winningTrades,
+        losingTrades:       state.losingTrades,
+        tradeHistory:       state.tradeHistory,
+        startedAt:          state.startedAt,
+        lastUpdatedAt:      state.lastUpdatedAt,
+      });
     } catch (err) {
       return json(res, { error: err.message }, 500);
     }

@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "agent": "node src/agent/index.js",
+    "run:momentum": "STRATEGY=momentum node src/engine/runner.js",
+    "run:mean-revert": "STRATEGY=mean-revert node src/engine/runner.js",
+    "runner": "node src/engine/runner.js",
     "verify": "node src/verify/index.js",
+    "api": "node src/scripts/api-server.js",
     "deploy": "npx hardhat run src/scripts/deploy.js",
     "dev": "cd frontend && npm run dev"
   },
