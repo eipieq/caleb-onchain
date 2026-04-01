@@ -210,7 +210,11 @@ async function main() {
       // update lastHeartbeat eagerly so the next tick doesn't also fire a heartbeat
       // while the async commit is in flight
       if (isHeartbeat) lastHeartbeat = now;
-      await commitSession(chain, policy, market, signal, check, exec);
+      const committed = await commitSession(chain, policy, market, signal, check, exec);
+      // backfill the real sessionId now that we know it (trades were recorded as "pending")
+      if (isExecution && exec.executed && committed?.sessionId) {
+        portfolio.backfillSessionId(committed.sessionId);
+      }
     }
 
     // ── skip log (no spam, just occasional) ──

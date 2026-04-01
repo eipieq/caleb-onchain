@@ -159,6 +159,22 @@ export class PortfolioManager {
     return this._snapshot();
   }
 
+  /**
+   * Replace all "pending" sessionIds in trade history with the real one.
+   * Called after the chain commit completes and the real sessionId is known.
+   * @param {string} realSessionId
+   */
+  backfillSessionId(realSessionId) {
+    let changed = false;
+    for (const trade of this.state.tradeHistory) {
+      if (trade.sessionId === "pending") {
+        trade.sessionId = realSessionId;
+        changed = true;
+      }
+    }
+    if (changed) this._save();
+  }
+
   // ─── Private ───────────────────────────────────────────────────────────────
 
   _fresh(startingUsd) {

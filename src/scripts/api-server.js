@@ -27,7 +27,10 @@ import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from 
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ethers } from "ethers";
-import { fetchMarketData } from "../market/index.js";
+import { fetchMarketData }    from "../market/index.js";
+import { getSimulatedPrices } from "../market/mock.js";
+
+const SIMULATED = process.env.SIMULATE === "true";
 
 import { ChainClient } from "../chain/client.js";
 
@@ -192,7 +195,9 @@ const server = createServer(async (req, res) => {
       const tokens = Object.keys(state.holdings ?? {}).concat(["INIT", "ETH", "USDC"]);
       // mark to market with live prices (best-effort, fall back to entry prices on failure)
       let prices = {};
-      try { ({ prices } = await fetchMarketData(tokens)); } catch {}
+      try {
+        ({ prices } = SIMULATED ? getSimulatedPrices(tokens) : await fetchMarketData(tokens));
+      } catch {}
       // compute current values
       let holdingsUsd = 0;
       const holdings  = {};
