@@ -32,6 +32,25 @@ import { getSimulatedPrices } from "../market/mock.js";
 
 const SIMULATED = process.env.SIMULATE === "true";
 
+// price cache — refresh at most once per 60s to avoid rate limits
+const priceCache = { prices: {}, fetchedAt: 0 };
+const PRICE_TTL_S = 60;
+
+async function getLivePrices(tokens) {
+  const now = Math.floor(Date.now() / 1000);
+  if (now - priceCache.fetchedAt < PRICE_TTL_S && Object.keys(priceCache.prices).length > 0) {
+    return priceCache.prices;
+  }
+  try {
+    const { prices } = await fetchMarketData(tokens);
+    if (Object.keys(prices).length > 0) {
+      priceCache.prices = prices;
+      priceCache.fetchedAt = now;
+    }
+  } catch {}
+  return priceCache.prices;
+}
+
 import { ChainClient } from "../chain/client.js";
 
 const __dirname       = dirname(fileURLToPath(import.meta.url));
@@ -195,14 +214,7 @@ const server = createServer(async (req, res) => {
       const state  = JSON.parse(readFileSync(PORTFOLIO_FILE, "utf8"));
       const tokens = Object.keys(state.holdings ?? {}).concat(["INIT", "ETH", "USDC"]);
       // mark to market with live prices (best-effort, fall back to entry prices on failure)
-      let prices = {};
-      try {
-        // always try real prices for mark-to-market; SIMULATE only controls swap execution
-        ({ prices } = await fetchMarketData(tokens));
-      } catch {
-        // fall back to simulated if live fetch fails
-        try { ({ prices } = getSimulatedPrices(tokens)); } catch {}
-      }
+      const prices = await getLivePrices(tokens);
       // compute current values
       let holdingsUsd = 0;
       const holdings  = {};
