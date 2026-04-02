@@ -197,8 +197,12 @@ const server = createServer(async (req, res) => {
       // mark to market with live prices (best-effort, fall back to entry prices on failure)
       let prices = {};
       try {
-        ({ prices } = SIMULATED ? getSimulatedPrices(tokens) : await fetchMarketData(tokens));
-      } catch {}
+        // always try real prices for mark-to-market; SIMULATE only controls swap execution
+        ({ prices } = await fetchMarketData(tokens));
+      } catch {
+        // fall back to simulated if live fetch fails
+        try { ({ prices } = getSimulatedPrices(tokens)); } catch {}
+      }
       // compute current values
       let holdingsUsd = 0;
       const holdings  = {};
