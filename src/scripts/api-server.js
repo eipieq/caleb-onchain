@@ -37,6 +37,7 @@ import { ChainClient } from "../chain/client.js";
 const __dirname       = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR    = join(__dirname, "../../sessions");
 const POLICY_FILE     = join(__dirname, "../../policy.json");
+const POLICIES_DIR    = join(__dirname, "../../data/policies");
 const PORTFOLIO_FILE  = join(__dirname, "../../data/portfolio.json");
 const PORT         = parseInt(process.env.API_PORT || "4000");
 
@@ -253,6 +254,37 @@ const server = createServer(async (req, res) => {
     req.on("end", () => {
       try {
         writeFileSync(POLICY_FILE, JSON.stringify(JSON.parse(body), null, 2));
+        return json(res, { ok: true });
+      } catch {
+        return json(res, { error: "invalid JSON" }, 400);
+      }
+    });
+    return;
+  }
+
+  // per-wallet policy: GET /api/policy/:address
+  const walletPolicyMatch = url.match(/^\/api\/policy\/(0x[0-9a-fA-F]{40})$/);
+  if (req.method === "GET" && walletPolicyMatch) {
+    const addr = walletPolicyMatch[1].toLowerCase();
+    const file = join(POLICIES_DIR, `${addr}.json`);
+    try {
+      return json(res, JSON.parse(readFileSync(file, "utf8")));
+    } catch {
+      // fall back to global policy
+      try { return json(res, JSON.parse(readFileSync(POLICY_FILE, "utf8"))); } catch {}
+      return json(res, {});
+    }
+  }
+
+  if (req.method === "POST" && walletPolicyMatch) {
+    const addr = walletPolicyMatch[1].toLowerCase();
+    let body = "";
+    req.on("data", (d) => (body += d));
+    req.on("end", () => {
+      try {
+        if (!existsSync(POLICIES_DIR)) mkdirSync(POLICIES_DIR, { recursive: true });
+        const policy = JSON.parse(body);
+        writeFileSync(join(POLICIES_DIR, `${addr}.json`), JSON.stringify(policy, null, 2));
         return json(res, { ok: true });
       } catch {
         return json(res, { error: "invalid JSON" }, 400);
