@@ -4,11 +4,10 @@
  *
  * Price sources, in priority order:
  *   1. Initia on-chain oracle  — authoritative for INIT pairs, fast, no rate-limit
- *   2. CoinGecko public API    — fallback for tokens not yet listed on the oracle
+ *   2. Binance public API      — real-time spot prices, no API key required
+ *   3. CoinGecko public API    — fallback for tokens not on Binance (e.g. INIT)
  *
- * The merged price map always prefers the on-chain value when both sources have
- * data for the same symbol, so oracle manipulation would need to compromise
- * the Initia validator set rather than just the CoinGecko feed.
+ * The merged price map prefers oracle > binance > coingecko per token.
  */
 
 const INITIA_API = "https://rest.testnet.initia.xyz";
@@ -19,6 +18,13 @@ const CG_IDS = {
   ETH:  "ethereum",
   USDC: "usd-coin",
   BTC:  "bitcoin",
+};
+
+// binance symbols (only tokens listed on Binance spot)
+const BINANCE_SYMBOLS = {
+  ETH:  "ETHUSDT",
+  BTC:  "BTCUSDT",
+  USDC: "USDCUSDT",
 };
 
 /**
@@ -45,6 +51,25 @@ async function fetchInitiaPrices(tokens) {
     for (const entry of data?.prices ?? []) {
       const symbol = entry.pair_id?.toUpperCase().replace("/USD", "").replace("USD/", "");
       if (symbol && tokens.includes(symbol)) prices[symbol] = parseFloat(entry.price);
+    }
+    return prices;
+  } catch {
+    return {};
+  }
+}
+
+async function fetchBinancePrices(tokens) {
+  const relevant = tokens.filter((t) => BINANCE_SYMBOLS[t]);
+  if (relevant.length === 0) return {};
+  try {
+    const symbols = JSON.stringify(relevant.map((t) => BINANCE_SYMBOLS[t]));
+    const data = await fetchJson(
+      `https://api.binance.com/api/v3/ticker/price?symbols=${encodeURIComponent(symbols)}`
+    );
+    const prices = {};
+    for (const entry of data) {
+      const token = Object.keys(BINANCE_SYMBOLS).find((t) => BINANCE_SYMBOLS[t] === entry.symbol);
+      if (token) prices[token] = parseFloat(entry.price);
     }
     return prices;
   } catch {
@@ -92,20 +117,21 @@ async function fetchPortfolio(address) {
  * @returns {Promise<{prices, portfolio, allowedTokens, fetchedAt, sources}>}
  */
 export async function fetchMarketData(allowedTokens) {
-  const [initia, cg, portfolio] = await Promise.all([
+  const [initia, binance, cg, portfolio] = await Promise.all([
     fetchInitiaPrices(allowedTokens),
+    fetchBinancePrices(allowedTokens),
     fetchCgPrices(allowedTokens),
     fetchPortfolio(process.env.WALLET_ADDRESS),
   ]);
 
-  // initia on-chain prices win; coingecko fills gaps
-  const prices = { ...cg, ...initia };
+  // oracle wins; binance fills gaps; coingecko is last resort
+  const prices = { ...cg, ...binance, ...initia };
 
   return {
     prices,
     portfolio,
     allowedTokens,
     fetchedAt: Math.floor(Date.now() / 1000),
-    sources: { initia: Object.keys(initia), coingecko: Object.keys(cg) },
+    sources: { initia: Object.keys(initia), binance: Object.keys(binance), coingecko: Object.keys(cg) },
   };
 }
