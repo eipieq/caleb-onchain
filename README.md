@@ -8,32 +8,7 @@ Caleb is an autonomous HFT trading agent that runs a momentum/mean-reversion str
 
 ## Architecture
 
-```
-CoinGecko / Initia Oracle
-         │  live prices
-         ▼
-┌─────────────────────┐      ┌──────────────────────────┐
-│   Agent Runner      │─────▶│   DecisionLog.sol        │
-│   2s tick loop      │      │   caleb-chain (minitia)  │
-│   momentum strategy │      │   settles → initiation-2 │
-└─────────────────────┘      └──────────────────────────┘
-         │  session JSON                │  keccak256 hashes
-         ▼                             ▼
-┌─────────────────────┐      ┌──────────────────────────┐
-│   API Server        │      │   Verification           │
-│   port 4000         │      │   re-hash local JSON     │
-│   sessions, verify  │      │   compare to on-chain    │
-└─────────────────────┘      └──────────────────────────┘
-         │
-         ▼
-┌─────────────────────┐
-│   Dashboard         │
-│   Next.js + wagmi   │
-│   wallet login      │
-│   live P&L          │
-│   verify button     │
-└─────────────────────┘
-```
+![architecture](./proof_of_agent_architecture.svg)
 
 ---
 
