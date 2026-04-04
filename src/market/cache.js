@@ -31,13 +31,17 @@ export class PriceCache {
   start() {
     const refresh = async () => {
       try {
-        this.data   = SIMULATED
-          ? getSimulatedPrices(this.tokens)
-          : await fetchMarketData(this.tokens);
-        this.errors = 0;
+        // always use real prices; SIMULATE only controls whether swaps actually execute
+        const result = await fetchMarketData(this.tokens);
+        // only update if we got prices back (avoid overwriting good data with empty)
+        if (Object.keys(result.prices ?? {}).length > 0) {
+          this.data   = result;
+          this.errors = 0;
+        }
       } catch (err) {
         this.errors++;
-        // keep serving stale data rather than nulling the cache on transient errors
+        // on failure, fall back to simulated so the runner keeps ticking
+        if (!this.data) this.data = getSimulatedPrices(this.tokens);
       }
     };
 
