@@ -243,6 +243,12 @@ async function main() {
   setInterval(tick, TICK_MS);
 }
 
+// chain commits occasionally drop the connection mid-flight.
+// catch it here so the tick loop keeps running instead of dying.
+process.on("unhandledRejection", (err) => {
+  log("ERR", err?.message ?? String(err), chalk.red);
+});
+
 main().catch((err) => {
   console.error(chalk.red("runner failed:"), err);
   process.exitCode = 1;
