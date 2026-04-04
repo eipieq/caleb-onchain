@@ -2,20 +2,16 @@
  * @file venice/index.js
  * AI decision engine powered by Venice (OpenAI-compatible API).
  *
- * Venice is used for the DECISION step (STEP 2) of each session. The LLM
- * receives the current market snapshot and operating policy, then returns a
- * structured verdict: BUY or SKIP, with a target token, USD amount, confidence
- * score, and plain-English reasoning.
+ * Venice is the DECISION layer (STEP 2) of each session. The momentum strategy
+ * detects a potential signal; Venice reviews it alongside the live market data
+ * and makes the final call — confirm the trade or override to SKIP.
  *
- * Latency note: a Venice round-trip typically takes 2–5 seconds. This is
- * acceptable for hourly DCA cycles but would be a bottleneck for HFT. For
- * high-frequency strategies, replace this with a rule-based decision module
- * and reserve Venice for strategy-level (slow) reasoning only.
+ * This hybrid approach gives us real-time signal detection (rule-based, 2s ticks)
+ * combined with AI judgment (called only when a signal fires, ~2-5s latency is fine).
  */
 
 import OpenAI from "openai";
 
-// venice is openai-compatible — drop-in swap
 const venice = new OpenAI({
   apiKey:  process.env.VENICE_API_KEY,
   baseURL: process.env.VENICE_BASE_URL || "https://api.venice.ai/api/v1",
@@ -23,43 +19,62 @@ const venice = new OpenAI({
 
 const MODEL = process.env.VENICE_MODEL || "llama-3.3-70b";
 
-const SYSTEM_PROMPT = `You are an autonomous DCA (dollar-cost averaging) trading agent operating on the Initia blockchain.
+const SYSTEM_PROMPT = `You are the AI decision layer of an autonomous trading agent on the Initia blockchain.
 
-Your job is to analyze market data and make a single binary decision: BUY or SKIP.
+A rule-based momentum strategy has detected a potential trade signal. Your job is to review that signal alongside live market data and make the final call: CONFIRM or OVERRIDE.
 
 Rules:
-- BUY means execute a token purchase this cycle
-- SKIP means do nothing this cycle
-- You must be conservative — when uncertain, SKIP
+- The strategy signal is a starting point — you are the final decision maker
+- CONFIRM the signal (return BUY or SELL) if the market context supports it
+- OVERRIDE to SKIP if you see reasons for caution (signal looks like noise, portfolio already exposed, abnormal spread, etc.)
+- Be conservative — when uncertain, SKIP
 - Your confidence must reflect genuine conviction, not optimism
 
 Respond ONLY with valid JSON matching this exact schema:
 {
-  "verdict": "BUY" | "SKIP",
-  "token": "<token symbol to buy, or null if SKIP>",
-  "amountUsd": <number — estimated USD amount, or 0 if SKIP>,
+  "verdict": "BUY" | "SELL" | "SKIP",
+  "token": "<token symbol, or null if SKIP>",
+  "amountUsd": <number — USD amount, or 0 if SKIP>,
   "confidence": <float 0.0–1.0>,
-  "reasoning": "<2-3 sentences explaining your decision>"
+  "reasoning": "<2-3 sentences explaining why you confirmed or overrode the signal>"
 }`;
 
 /**
- * Ask the LLM to analyse the current market and return a trading decision.
+ * Ask the AI to review a momentum signal and make the final trade decision.
  *
- * @param {object} market - MARKET step payload (prices, portfolio, allowedTokens)
- * @param {object} policy - Active policy config (maxSpendUsd, allowedTokens, confidenceThreshold)
+ * @param {object} market  - MARKET step payload (prices, portfolio, allowedTokens)
+ * @param {object} policy  - Active policy config
+ * @param {object} signal  - The momentum strategy's detected signal
+ * @param {number[]} history - Recent price history for context
  * @returns {Promise<{verdict, token, amountUsd, confidence, reasoning, model, timestamp}>}
- * @throws if the response JSON is malformed or contains an unrecognised verdict
  */
-export async function getAiDecision(market, policy) {
-  const prompt = `Current market snapshot:
-${JSON.stringify(market, null, 2)}
+export async function getAiDecision(market, policy, signal, history = []) {
+  const recentPrices = history.slice(-10); // last 10 ticks for context
+  const priceChange  = recentPrices.length >= 2
+    ? ((recentPrices.at(-1) - recentPrices[0]) / recentPrices[0] * 100).toFixed(3)
+    : "unknown";
 
-Your operating policy:
-- Max spend per cycle: $${policy.maxSpendUsd} USD
+  const prompt = `The momentum strategy detected a ${signal.verdict} signal:
+- Token: ${signal.token}
+- Signal strength: ${(signal.signal * 100).toFixed(3)}% breakout
+- Strategy reason: ${signal.reason}
+- Suggested amount: $${signal.amountUsd?.toFixed(2) ?? 0}
+
+Live market context:
+- Current price: $${market.prices[signal.token]?.toFixed(4) ?? "unknown"}
+- Price change over last ${recentPrices.length} ticks: ${priceChange}%
+- Recent prices: ${recentPrices.map(p => p.toFixed(4)).join(", ")}
+
+Portfolio state:
+- USDC balance: $${market.portfolio?.usdcBalance?.toFixed(2) ?? "unknown"}
+- Holdings: ${JSON.stringify(market.portfolio?.holdings ?? {})}
+
+Operating policy:
+- Max spend per trade: $${policy.maxSpendUsd}
 - Allowed tokens: ${policy.allowedTokens.join(", ")}
-- Confidence threshold required: ${policy.confidenceThreshold}
+- Confidence threshold: ${policy.confidenceThreshold}
 
-Analyze and decide.`;
+Should you confirm this ${signal.verdict} signal or override to SKIP?`;
 
   const res = await venice.chat.completions.create({
     model:       MODEL,
@@ -68,9 +83,11 @@ Analyze and decide.`;
     max_tokens:  512,
   });
 
-  const parsed = JSON.parse(res.choices[0].message.content);
+  // strip markdown code fences if the model wraps its JSON
+  const raw    = res.choices[0].message.content.replace(/```(?:json)?\n?/g, "").trim();
+  const parsed = JSON.parse(raw);
 
-  if (!["BUY", "SKIP"].includes(parsed.verdict)) {
+  if (!["BUY", "SELL", "SKIP"].includes(parsed.verdict)) {
     throw new Error(`invalid verdict from AI: ${parsed.verdict}`);
   }
   if (typeof parsed.confidence !== "number" || parsed.confidence < 0 || parsed.confidence > 1) {
@@ -78,12 +95,14 @@ Analyze and decide.`;
   }
 
   return {
-    verdict:    parsed.verdict,
-    token:      parsed.token ?? null,
-    amountUsd:  parsed.amountUsd ?? 0,
-    confidence: parsed.confidence,
-    reasoning:  parsed.reasoning ?? "",
-    model:      MODEL,
-    timestamp:  Math.floor(Date.now() / 1000),
+    verdict:        parsed.verdict,
+    token:          parsed.token ?? signal.token,
+    amountUsd:      parsed.amountUsd ?? 0,
+    confidence:     parsed.confidence,
+    reasoning:      parsed.reasoning ?? "",
+    strategySignal: signal.verdict,
+    signalStrength: signal.signal,
+    model:          MODEL,
+    timestamp:      Math.floor(Date.now() / 1000),
   };
 }

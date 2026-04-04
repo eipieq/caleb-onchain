@@ -31,6 +31,7 @@ import { loadStrategy }           from "../strategies/index.js";
 import { PositionTracker }        from "./position.js";
 import { PortfolioManager }       from "./portfolio.js";
 import { DEFAULT_POLICY }         from "../agent/policy.js";
+import { getAiDecision }          from "../venice/index.js";
 
 const __dirname    = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = join(__dirname, "../../sessions");
@@ -147,11 +148,27 @@ async function main() {
       return;
     }
 
-    // ── strategy decision (uses history of past prices, not current) ──
-    const signal = strategy.decide(market.prices, history, position.get(), policy);
+    // ── strategy signal (rule-based, fast) ──
+    const strategySignal = strategy.decide(market.prices, history, position.get(), policy);
 
     // push current price after decision so next tick's history is up-to-date
     if (price > 0) { history.push(price); if (history.length > HISTORY_SIZE) history.shift(); }
+
+    // ── AI decision layer (only called when strategy fires a non-SKIP signal) ──
+    let signal = strategySignal;
+    if (strategySignal.verdict !== "SKIP") {
+      try {
+        log("AI", `strategy detected ${strategySignal.verdict} — asking AI…`, chalk.cyan);
+        const portfolioSnap = portfolio.get(market.prices);
+        const marketWithPortfolio = { ...market, portfolio: portfolioSnap };
+        signal = await getAiDecision(marketWithPortfolio, policy, strategySignal, history);
+        const overridden = signal.verdict !== strategySignal.verdict;
+        log("AI", `${overridden ? "OVERRIDE→" : "CONFIRM→"}${signal.verdict}  confidence=${signal.confidence.toFixed(2)}  "${signal.reasoning.slice(0, 80)}…"`, overridden ? chalk.yellow : chalk.green);
+      } catch (err) {
+        log("AI ERR", `${err.message} — falling back to strategy signal`, chalk.red);
+        signal = strategySignal;
+      }
+    }
 
     // ── policy check ──
     const check  = await runPolicyCheck(signal, market, policy, [], position.get(), portfolio);
