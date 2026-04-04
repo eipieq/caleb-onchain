@@ -1,117 +1,109 @@
-# Caleb — Verifiable Autonomous Trading Agent on Initia
+# caleb — verifiable autonomous trading agent on Initia
 
-Caleb is an autonomous HFT trading agent that runs a momentum/mean-reversion strategy against live market prices and commits a cryptographic audit trail of every decision to an EVM minitia chain on Initia.
+caleb is an autonomous trading agent that runs a momentum strategy against live prices and commits a cryptographic audit trail of every decision to an EVM minitia on Initia. you shouldn't have to trust the agent operator. every decision — the policy it ran under, the market data it saw, the AI verdict, the risk gates it checked, and what it executed — is hashed and committed to chain before any trade happens. anyone can verify the agent followed its rules without trusting anyone.
 
-**The core idea:** you shouldn't have to trust the agent operator. Every decision the agent makes — its policy, the market data it saw, the AI verdict, the risk gates it checked, and what it executed — is hashed and committed to chain *before* any trade executes. Anyone can verify the agent followed its rules, independently, without trusting anyone.
+**live:** [caleb.sandpark.co](https://caleb.sandpark.co) · [app.caleb.sandpark.co](https://app.caleb.sandpark.co)
+
+**repos:** [caleb-onchain](https://github.com/eipieq/caleb-onchain) · [caleb-app](https://github.com/eipieq/caleb-app) · [caleb (landing)](https://github.com/eipieq/caleb)
 
 ---
 
-## Architecture
+## architecture
 
 ![architecture](./proof_of_agent_architecture.svg)
 
 ---
 
-## How the Audit Trail Works
+## how the audit trail works
 
-Every agent cycle commits a 5-step session to chain:
+every agent cycle commits 5 ordered steps to chain:
 
-| Step | What | Why |
-|------|------|-----|
-| `POLICY` | Hash of operating rules (max spend, cooldown, token whitelist) | Proves the agent's constraints before it acted |
-| `MARKET` | Hash of live price snapshot | Proves what data the agent saw |
-| `DECISION` | Hash of AI verdict (BUY/SKIP, confidence, reasoning) | Proves what the agent decided |
-| `CHECK` | Hash of 6-gate risk validation results | Proves each safety gate was evaluated |
-| `EXECUTION` | Hash of trade outcome or skip reason | Proves what actually happened |
+| step | what it stores | why it matters |
+|------|----------------|----------------|
+| `POLICY` | hash of operating rules (max spend, cooldown, whitelist) | proves the agent's constraints before it acted |
+| `MARKET` | hash of live price snapshot | proves what data the agent saw |
+| `DECISION` | hash of AI verdict (BUY/SKIP, confidence, reasoning) | proves what the agent decided |
+| `CHECK` | hash of 6-gate risk validation results | proves each safety gate ran |
+| `EXECUTION` | hash of trade outcome or skip reason | proves what actually happened |
 
-The `DecisionLog.sol` contract enforces ordering — steps must arrive POLICY → EXECUTION — and locks the session after finalization. Steps cannot be replayed or reordered.
+`DecisionLog.sol` enforces ordering — steps must arrive POLICY → EXECUTION in sequence. the contract rejects anything out of order and locks the session after finalization.
 
-**Verification:** the API server re-hashes each step payload from the local JSON file and compares to the on-chain hashes via `getStep()`. Any tampering with the JSON produces a hash mismatch. The dashboard exposes this as a one-click verify button.
+**verification:** the API re-hashes each step payload from the local JSON and compares to on-chain hashes via `getStep()`. tamper with the JSON and the hashes won't match. the dashboard exposes this as a one-click verify button.
 
-**Attestation:** any wallet can call `attest(sessionId)` on the contract to record that they independently verified a session. Their address is permanently on-chain.
+**attestation:** any wallet can call `attest(sessionId)` to permanently record on-chain that they independently verified a session.
 
 ---
 
-## The Contract
+## the contract
 
-`DecisionLog.sol` — deployed at `0x22679adc7475B922901137F22D120404c074044f` on `caleb-chain`
+`DecisionLog.sol` at `0x22679adc7475B922901137F22D120404c074044f` on `caleb-chain`
 
-Key functions:
 - `startSession(sessionId)` — opens a new audit session
-- `commitStep(sessionId, stepKind, dataHash)` — records one step hash (enforces ordering)
-- `finalizeSession(sessionId)` — locks the session immutably
+- `commitStep(sessionId, stepKind, dataHash)` — records one step hash, enforces ordering
+- `finalizeSession(sessionId)` — locks the session permanently
 - `attest(sessionId)` — independent verification record
 - `getStep / getSession / getAttestationCount` — read-only audit queries
 
 ---
 
-## The Agent
+## the agent
 
-**Runner** (`src/engine/runner.js`) — 2-second tick loop:
-- Reads live prices from CoinGecko (cached every 500ms independently of the tick)
-- Applies configurable strategy (momentum breakout or mean-reversion)
-- Runs 6-gate policy check before any execution
-- Commits to chain selectively: only on trades, blocked gates, or 60s heartbeats (not every tick — to avoid chain spam)
-- Tracks portfolio P&L in `data/portfolio.json`
+**runner** (`src/engine/runner.js`) — 2-second tick loop. reads live prices from Binance and the Initia oracle, runs the strategy, calls Venice AI (Llama 3.3-70B) to confirm or override the signal, then runs 6 risk gates before any execution. commits to chain selectively: only on trades, blocked gates, or 60s heartbeats. not every tick — that would spam the chain and make the audit log useless.
 
-**Strategies** (`src/strategies/`):
+**strategies:**
 - `momentum.js` — buy when price breaks out above rolling high, sell on reversal
 - `mean-revert.js` — buy at oversold RSI, sell at overbought
 
-**Policy gates** (all must pass before any trade):
-1. Spend within `maxSpendUsd` limit
-2. Token is in whitelist
-3. AI confidence ≥ threshold
-4. Cooldown period elapsed since last trade
-5. Verdict is a valid value
-6. Token has a positive live price
+**policy gates** (all must pass before any trade):
+1. spend within `maxSpendUsd`
+2. token is in whitelist
+3. AI confidence >= threshold
+4. cooldown elapsed since last trade
+5. verdict is a valid value
+6. token has a positive live price
 
 ---
 
-## The Dashboard
+## the dashboard
 
-Live at: https://caleb-app.vercel.app
+live at [app.caleb.sandpark.co](https://app.caleb.sandpark.co)
 
-- Connect Initia wallet via InterwovenKit
-- See your live INIT balance on Initia testnet
-- Configure your own strategy (per-wallet policy stored on the backend)
-- Watch agent decisions stream in with verdict, confidence, reasoning
-- Click any session to see the full 5-step audit timeline with on-chain tx links
-- One-click verify: re-hashes all steps and compares to chain
-- Attest: sign a transaction to permanently record your verification on-chain
+- connect your Initia wallet via InterwovenKit
+- watch agent decisions stream in with verdict, confidence, and AI reasoning
+- click any session to see the full 5-step audit timeline
+- one-click verify: re-hashes all steps and compares to chain
+- attest: sign a transaction to permanently record your verification on-chain
+- configure your own strategy (per-wallet policy, applied on every tick)
 
 ---
 
-## Stack
+## stack
 
-| Layer | Tech |
+| layer | tech |
 |-------|------|
-| Chain | Initia minitia (minievm), settles to `initiation-2` |
-| Smart contract | Solidity (Hardhat), `DecisionLog.sol` |
-| Agent | Node.js (ESM), ethers.js |
-| Prices | CoinGecko API |
-| API | Plain Node.js HTTP (no framework) |
-| Dashboard | Next.js 14, wagmi, @tanstack/react-query |
-| Wallet | `@initia/interwovenkit-react` |
+| chain | Initia minitia (minievm), settles to `initiation-2` |
+| smart contract | Solidity (Hardhat), `DecisionLog.sol` |
+| agent | Node.js (ESM), ethers.js |
+| AI | Venice AI, Llama 3.3-70B |
+| prices | Binance API + Initia oracle |
+| API | plain Node.js HTTP |
+| dashboard | Next.js, wagmi, InterwovenKit |
 
 ---
 
-## Running Locally
+## running locally
 
-**Prerequisites:** Node.js 18+, a `.env` file (see `.env.example`)
+requires Node.js 18+ and a `.env` file (see `.env.example`).
 
 ```bash
-# install
 npm install
 
-# run the agent (simulated swaps, real prices)
+# run the agent
 SIMULATE=true STRATEGY=momentum node src/engine/runner.js
 
 # run the API server
 SIMULATE=true node src/scripts/api-server.js
 ```
-
-**Environment variables:**
 
 ```env
 INITIA_RPC_URL=http://64.227.139.172:8545
@@ -123,11 +115,11 @@ STRATEGY=momentum
 
 ---
 
-## Repo Structure
+## repo structure
 
 ```
 contracts/
-  DecisionLog.sol          — on-chain audit log contract
+  DecisionLog.sol          — on-chain audit log
 
 src/
   engine/
@@ -140,35 +132,30 @@ src/
   chain/
     client.js              — ethers.js wrapper for DecisionLog
   market/
-    index.js               — CoinGecko price fetching
+    index.js               — Binance + Initia oracle price fetching
     cache.js               — 500ms background price cache
-    mock.js                — GBM fallback (emergencies only)
   policy/
     index.js               — 6-gate risk validator
+  venice/
+    index.js               — Venice AI decision layer
   scripts/
-    api-server.js          — HTTP API for dashboard
+    api-server.js          — HTTP API for the dashboard
     deploy.js              — contract deployment
 
-sessions/                  — local session JSON files (audit records)
+sessions/                  — local session JSON files
 data/
   portfolio.json           — persistent P&L state
   policies/                — per-wallet strategy configs
-
-frontend/ → see caleb-app/ (separate Next.js repo)
 ```
 
 ---
 
-## Key Design Decisions
+## design decisions
 
-**Why a custom minitia instead of deploying on initiation-2 directly?**
-The agent commits on every meaningful event (trades, blocked gates, 60s heartbeats). On a shared testnet this would be noise. A dedicated chain keeps the audit log clean and gives us full control over gas pricing.
+**why a custom minitia instead of initiation-2 directly?** the agent commits on every meaningful event. on a shared testnet that's noise. a dedicated chain keeps the audit log clean and gives full control over gas pricing and block times.
 
-**Why hash-only on chain instead of full payloads?**
-Data costs. A full market snapshot is 2-5KB per step. At 2s ticks with selective logging, that's still potentially thousands of sessions. Hashes are 32 bytes, calldata is cheap. The full data lives in `sessions/` — the chain stores the fingerprints.
+**why hash-only on chain instead of full payloads?** a full market snapshot is 2-5KB per step. hashes are 32 bytes. the full data lives in `sessions/` — the chain stores the fingerprints. the `StepCommitted` event does include the full payload as a string, so data can be recovered from chain events even if the local files are lost.
 
-**Why selective chain commits (not every tick)?**
-A 2s tick loop produces 43,000+ ticks/day. Most are SKIP — no signal, nothing happened. Committing every tick would spam the chain and make the audit log unreadable. Only ticks where something happened (trade, blocked gate, heartbeat) get committed.
+**why selective commits (not every tick)?** a 2s loop produces 43,000+ ticks/day. most are SKIP. committing every tick would spam the chain and make the audit log unreadable.
 
-**SIMULATE=true**
-Swap execution is mocked — the agent makes real decisions based on real prices but doesn't call a DEX. All other components (policy, chain commits, portfolio tracking) run for real.
+**SIMULATE=true** — swap execution is mocked. the agent makes real decisions based on real prices but doesn't call a DEX. everything else (policy, chain commits, portfolio tracking, AI decisions) runs for real.
