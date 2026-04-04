@@ -1,7 +1,7 @@
 {
   "project_name": "caleb",
   "repo_url": "https://github.com/eipieq/caleb-onchain",
-  "commit_sha": "d1cd774d5768c8329bdf976fabc5f2de2871e1c6",
+  "commit_sha": "359cdac7069992d42eda4a1459f6f10e6d9dc076",
   "rollup_chain_id": "caleb-chain",
   "deployed_address": "0x22679adc7475B922901137F22D120404c074044f",
   "vm": "evm",
