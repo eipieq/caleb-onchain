@@ -1,21 +1,20 @@
 /**
  * @file engine/portfolio.js
- * Persistent portfolio state manager.
+ * persistent portfolio state manager.
  *
- * Tracks the agent's full investment position across restarts. Every state
- * mutation (buy or sell) is recorded with the sessionId that caused it, so
- * the entire P&L history is auditable back to on-chain evidence.
+ * tracks the agent's full position across restarts. every trade is recorded
+ * with the sessionId that triggered it, so P&L history is auditable back to
+ * on-chain evidence.
  *
- * State is persisted to portfolio.json after every trade. On restart the
- * manager loads the existing file and continues from where it left off —
- * no trade history is lost.
+ * state is written to portfolio.json after every trade. on restart it loads
+ * and continues from where it left off.
  *
- * Audit design:
+ * audit design:
  *   - tradeHistory[n].sessionId links each trade to its on-chain session
- *   - The EXECUTION step payload embeds a portfolioAfter snapshot, so the
- *     portfolio state after each trade is committed to the chain verbatim
- *   - Reconstructing the portfolio from chain events alone is possible by
- *     replaying all EXECUTION payloads in session order
+ *   - the EXECUTION step payload embeds a portfolioAfter snapshot, committing
+ *     portfolio state to the chain verbatim after each trade
+ *   - you can reconstruct the portfolio purely from chain events by replaying
+ *     all EXECUTION payloads in session order
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
@@ -33,7 +32,7 @@ export class PortfolioManager {
     this.state = null;
   }
 
-  /** Load from disk, or initialise a fresh portfolio if none exists. */
+  /** load from disk, or start fresh if no file exists. */
   load() {
     if (existsSync(PORTFOLIO_FILE)) {
       this.state = JSON.parse(readFileSync(PORTFOLIO_FILE, "utf8"));
@@ -44,7 +43,7 @@ export class PortfolioManager {
     return this;
   }
 
-  /** Full portfolio state, optionally marked-to-market with current prices. */
+  /** full portfolio state, optionally marked-to-market with current prices. */
   get(prices = {}) {
     const holdings     = this.state.holdings;
     let   holdingsUsd  = 0;
@@ -90,18 +89,14 @@ export class PortfolioManager {
     };
   }
 
-  /** Available USDC for a new BUY. */
+  /** available USDC for a new BUY. */
   availableUsd() {
     return this.state.usdcBalance;
   }
 
   /**
-   * Apply a BUY execution to the portfolio.
-   * @param {string} token
-   * @param {number} amountUsd  - USD spent
-   * @param {number} price      - Fill price
-   * @param {string} sessionId  - On-chain session that caused this trade
-   * @returns {object} portfolioAfter snapshot (embedded in EXECUTION step)
+   * apply a BUY execution to the portfolio.
+   * returns a portfolioAfter snapshot for embedding in the EXECUTION step.
    */
   applyBuy(token, amountUsd, price, sessionId) {
     const units = amountUsd / price;
@@ -109,7 +104,7 @@ export class PortfolioManager {
     // deduct USDC
     this.state.usdcBalance -= amountUsd;
 
-    // update holding with weighted avg entry price
+    // weighted avg entry price
     if (!this.state.holdings[token]) {
       this.state.holdings[token] = { amount: 0, avgEntryPrice: 0, totalCostUsd: 0 };
     }
@@ -125,12 +120,8 @@ export class PortfolioManager {
   }
 
   /**
-   * Apply a SELL execution to the portfolio.
-   * @param {string} token
-   * @param {number} amountUsd  - USD received
-   * @param {number} price      - Fill price
-   * @param {string} sessionId  - On-chain session that caused this trade
-   * @returns {object} portfolioAfter snapshot (embedded in EXECUTION step)
+   * apply a SELL execution to the portfolio.
+   * returns a portfolioAfter snapshot for embedding in the EXECUTION step.
    */
   applySell(token, amountUsd, price, sessionId) {
     const h = this.state.holdings[token];
@@ -149,7 +140,7 @@ export class PortfolioManager {
     h.totalCostUsd -= costBasis;
     if (h.amount <= 0.000001) delete this.state.holdings[token]; // fully closed
 
-    // record realised P&L
+    // realised P&L
     this.state.realisedPnlUsd += pnlUsd;
     if (pnlUsd >= 0) this.state.winningTrades++;
     else             this.state.losingTrades++;
@@ -160,9 +151,8 @@ export class PortfolioManager {
   }
 
   /**
-   * Replace all "pending" sessionIds in trade history with the real one.
-   * Called after the chain commit completes and the real sessionId is known.
-   * @param {string} realSessionId
+   * replace "pending" sessionIds in trade history with the real one.
+   * called after the chain commit completes and the actual sessionId is known.
    */
   backfillSessionId(realSessionId) {
     let changed = false;
@@ -175,7 +165,7 @@ export class PortfolioManager {
     if (changed) this._save();
   }
 
-  // ─── Private ───────────────────────────────────────────────────────────────
+  // private
 
   _fresh(startingUsd) {
     const now = Math.floor(Date.now() / 1000);
@@ -203,7 +193,7 @@ export class PortfolioManager {
     });
   }
 
-  /** Lightweight snapshot to embed in on-chain EXECUTION payloads. */
+  /** lightweight snapshot for embedding in on-chain EXECUTION payloads. */
   _snapshot() {
     return {
       usdcBalance:    parseFloat(this.state.usdcBalance.toFixed(4)),

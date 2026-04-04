@@ -1,18 +1,18 @@
 /**
  * @file market/index.js
- * Fetches price and portfolio data for the agent's market snapshot (STEP 1).
+ * fetches price and portfolio data for the agent's market snapshot (STEP 1).
  *
- * Price sources, in priority order:
- *   1. Initia on-chain oracle  — authoritative for INIT pairs, fast, no rate-limit
- *   2. Binance public API      — real-time spot prices, no API key required
+ * price sources in priority order:
+ *   1. Initia on-chain oracle  — authoritative for INIT pairs, no rate-limit
+ *   2. Binance public API      — real-time spot, no key required
  *   3. CoinGecko public API    — fallback for tokens not on Binance (e.g. INIT)
  *
- * The merged price map prefers oracle > binance > coingecko per token.
+ * oracle wins per token, then Binance, then CoinGecko.
  */
 
 const INITIA_API = "https://rest.testnet.initia.xyz";
 
-// coingecko ids for fallback pricing
+// CoinGecko ids for fallback pricing
 const CG_IDS = {
   INIT: "initia",
   ETH:  "ethereum",
@@ -20,18 +20,14 @@ const CG_IDS = {
   BTC:  "bitcoin",
 };
 
-// binance symbols (only tokens listed on Binance spot)
+// Binance symbols — only tokens actually listed on Binance spot
 const BINANCE_SYMBOLS = {
   ETH:  "ETHUSDT",
   BTC:  "BTCUSDT",
   USDC: "USDCUSDT",
 };
 
-/**
- * Fetch JSON from a URL with a hard timeout. Returns the parsed body or throws.
- * @param {string} url
- * @param {number} timeoutMs
- */
+/** fetch JSON with a hard timeout. throws on bad status or network error. */
 async function fetchJson(url, timeoutMs = 8000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -110,11 +106,8 @@ async function fetchPortfolio(address) {
 }
 
 /**
- * Build a market snapshot for the current cycle.
- * Fires all three fetches in parallel to minimise latency.
- *
- * @param {string[]} allowedTokens - e.g. ["INIT", "ETH", "USDC"]
- * @returns {Promise<{prices, portfolio, allowedTokens, fetchedAt, sources}>}
+ * build a market snapshot for the current cycle.
+ * all three price fetches run in parallel to keep latency down.
  */
 export async function fetchMarketData(allowedTokens) {
   const [initia, binance, cg, portfolio] = await Promise.all([
@@ -124,7 +117,7 @@ export async function fetchMarketData(allowedTokens) {
     fetchPortfolio(process.env.WALLET_ADDRESS),
   ]);
 
-  // oracle wins; binance fills gaps; coingecko is last resort
+  // oracle wins; Binance fills gaps; CoinGecko is last resort
   const prices = { ...cg, ...binance, ...initia };
 
   return {

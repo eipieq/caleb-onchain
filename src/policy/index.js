@@ -1,30 +1,24 @@
 /**
  * @file policy/index.js
- * Six-gate policy engine that runs as STEP 3 (CHECK) of every session.
+ * policy engine — runs as STEP 3 (CHECK) of every session.
  *
- * Gates are evaluated in parallel and ALL must pass for a swap to execute.
- * Each gate returns a {name, passed, reason} object so the on-chain record
- * shows exactly which constraint was satisfied or violated.
+ * gates run in parallel; all must pass for a swap to execute. each gate
+ * returns {name, passed, reason} so the on-chain record shows exactly what
+ * was checked and why it passed or failed.
  *
- * Gate summary:
- *   spendLimit         — swap amount ≤ policy.maxSpendUsd
- *   tokenWhitelist     — token is in policy.allowedTokens
- *   confidenceThreshold — AI confidence ≥ policy.confidenceThreshold
- *   cooldown           — no executed swap within the last policy.cooldownSeconds
- *   verdictValid       — verdict is one of the recognised enum values
- *   marketSanity       — a positive price exists for the target token
+ * gates:
+ *   spendLimit          — swap amount <= policy.maxSpendUsd
+ *   tokenWhitelist      — token is in policy.allowedTokens
+ *   signalStrength      — confidence >= policy.confidenceThreshold
+ *   cooldown            — no swap within the last policy.cooldownSeconds
+ *   verdictValid        — verdict is BUY, SELL, or SKIP
+ *   marketSanity        — a positive price exists for the target token
+ *   maxPosition         — BUY won't push position over policy.maxPositionUsd
+ *   maxDrawdown         — open position isn't already past the drawdown limit
+ *   availableBalance    — enough USDC to fund the trade
  */
 
-/**
- * Run all policy gates against the current decision and market data.
- *
- * @param {object}      ai        - DECISION step payload
- * @param {object}      market    - MARKET step payload
- * @param {object}      policy    - Active policy config
- * @param {object[]}    prevSteps - Earlier steps (used for cooldown in DCA mode)
- * @param {object|null} position  - Current open position (used for drawdown gate)
- * @returns {Promise<{passed, blockedBy, gates, timestamp}>}
- */
+/** run all policy gates against the current decision and market data. */
 export async function runPolicyCheck(ai, market, policy, prevSteps = [], position = null, portfolio = null) {
   const gates = await Promise.all([
     gate_spendLimit(ai, policy),
@@ -72,9 +66,8 @@ function gate_tokenWhitelist(ai, policy) {
 }
 
 /**
- * Signal strength gate — replaces the LLM-specific confidenceThreshold gate.
- * For rule-based strategies, `confidence` is the normalised signal strength
- * [0–1] returned by the strategy's decide() function.
+ * for rule-based strategies, `confidence` is the normalised signal strength [0-1]
+ * from decide(). for AI mode it's the model's confidence score. same gate either way.
  */
 function gate_signalStrength(ai, policy) {
   if (ai.verdict === "SKIP") return { name: "signalStrength", passed: true, reason: "skip" };
@@ -114,8 +107,8 @@ function gate_verdict(ai) {
 }
 
 /**
- * Prevent opening a position that would exceed the max total exposure.
- * Only applies to BUY verdicts — SELL always passes (closing reduces risk).
+ * blocks BUYs that would push total exposure over the limit.
+ * SELLs always pass — closing a position is fine.
  */
 function gate_maxPosition(ai, policy, position) {
   if (ai.verdict !== "BUY" || !policy.maxPositionUsd) {
@@ -134,8 +127,8 @@ function gate_maxPosition(ai, policy, position) {
 }
 
 /**
- * Ensure the portfolio has enough USDC to fund the trade.
- * Only relevant for BUY orders — SELL never requires USDC.
+ * blocks BUYs when the portfolio doesn't have enough USDC.
+ * SELLs skip this — they don't need USDC.
  */
 function gate_availableBalance(ai, portfolio) {
   if (ai.verdict !== "BUY" || !portfolio) {
@@ -153,9 +146,8 @@ function gate_availableBalance(ai, portfolio) {
 }
 
 /**
- * Halt trading if the open position is down more than maxDrawdownPct.
- * Only checked when there is an open position and the signal is a BUY
- * (adding to a losing position is the main risk here).
+ * halts trading if the open position is down more than maxDrawdownPct.
+ * basically prevents doubling down on a losing position.
  */
 function gate_maxDrawdown(ai, policy, position, market) {
   if (!policy.maxDrawdownPct || !position || ai.verdict === "SKIP") {

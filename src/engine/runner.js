@@ -2,17 +2,16 @@
  * @file engine/runner.js
  * HFT strategy runner — the tight decision loop.
  *
- * Replaces the one-shot agent/index.js for high-frequency strategies.
- * Runs a configurable tick loop, applies a rule-based strategy on each tick,
- * and commits to the chain only when something noteworthy happens.
+ * ticks on a configurable interval, applies a rule-based strategy each tick,
+ * and commits to the chain only when something worth recording happens.
  *
- * Selective logging rule (to avoid chain spam):
- *   - Trade executed         → full 5-step session committed
- *   - Gate blocked a trade   → full 5-step session committed (risk audit trail)
- *   - Every HEARTBEAT_S secs → lightweight session committed (liveness proof)
- *   - SKIP tick (no signal)  → nothing committed
+ * what gets committed (to avoid chain spam):
+ *   - trade executed       -> full 5-step session
+ *   - gate blocked a trade -> full 5-step session (risk audit trail)
+ *   - every HEARTBEAT_S    -> lightweight session (liveness proof)
+ *   - SKIP tick            -> nothing
  *
- * Usage:
+ * usage:
  *   STRATEGY=momentum node src/engine/runner.js
  *   STRATEGY=mean-revert TICK_MS=1000 node src/engine/runner.js
  */
@@ -36,15 +35,15 @@ import { getAiDecision }          from "../venice/index.js";
 const __dirname    = dirname(fileURLToPath(import.meta.url));
 const SESSIONS_DIR = join(__dirname, "../../sessions");
 
-// ─── Config ──────────────────────────────────────────────────────────────────
+// config
 
 const STRATEGY_NAME  = process.env.STRATEGY    || "momentum";
 const TICK_MS        = parseInt(process.env.TICK_MS        || "2000");
 const HISTORY_SIZE   = parseInt(process.env.HISTORY_SIZE   || "50");
 const HEARTBEAT_S    = parseInt(process.env.HEARTBEAT_S    || "60");
-const MIN_HISTORY    = parseInt(process.env.MIN_HISTORY    || "5");  // ticks before first signal
+const MIN_HISTORY    = parseInt(process.env.MIN_HISTORY    || "5");  // ticks before the first signal fires
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// helpers
 
 function log(label, msg, color = chalk.white) {
   console.log(`${chalk.gray(new Date().toISOString())}  ${color(label.padEnd(12))}  ${msg}`);
@@ -56,11 +55,11 @@ function saveSession(sessionId, record) {
   writeFileSync(path, JSON.stringify(record, null, 2));
 }
 
-// ─── On-chain session commit ──────────────────────────────────────────────────
+// on-chain session commit
 
 /**
- * Commit a full 5-step session to the chain and save it locally.
- * Called only on executions, gate-blocks, and heartbeats.
+ * commit a full 5-step session to the chain and save it locally.
+ * only called on executions, gate-blocks, and heartbeats.
  */
 async function commitSession(chain, policy, market, signal, check, exec) {
   const now       = Math.floor(Date.now() / 1000);
@@ -99,10 +98,10 @@ async function commitSession(chain, policy, market, signal, check, exec) {
   return record;
 }
 
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// main
 
 async function main() {
-  const policy    = { ...DEFAULT_POLICY, cooldownSeconds: 0 }; // HFT: no cooldown
+  const policy    = { ...DEFAULT_POLICY, cooldownSeconds: 0 }; // HFT doesn't use cooldown
   const strategy  = loadStrategy(STRATEGY_NAME);
   const position  = new PositionTracker();
   const portfolio = new PortfolioManager().load();
@@ -115,7 +114,7 @@ async function main() {
 
   const cache = new PriceCache(policy.allowedTokens).start();
 
-  /** Rolling price history for the primary token (newest last). */
+  /** rolling price history for the primary token, newest last. */
   const history = [];
 
   let tickCount      = 0;
@@ -136,9 +135,8 @@ async function main() {
       return;
     }
 
-    // maintain rolling price history for primary token
-    // history is passed to decide() BEFORE pushing the current price so that
-    // strategies compare current price against *past* prices, not themselves
+    // history is passed to decide() before pushing the current price so
+    // strategies compare against past prices, not themselves
     const token = policy.allowedTokens.find((t) => t !== "USDC") ?? "INIT";
     const price = market.prices[token];
 
@@ -148,13 +146,13 @@ async function main() {
       return;
     }
 
-    // ── strategy signal (rule-based, fast) ──
+    // strategy signal (rule-based, fast)
     const strategySignal = strategy.decide(market.prices, history, position.get(), policy);
 
-    // push current price after decision so next tick's history is up-to-date
+    // push current price after the decision so next tick's history is up-to-date
     if (price > 0) { history.push(price); if (history.length > HISTORY_SIZE) history.shift(); }
 
-    // ── AI decision layer (only called when strategy fires a non-SKIP signal) ──
+    // AI decision layer — only called when strategy fires a non-SKIP signal
     let signal = strategySignal;
     if (strategySignal.verdict !== "SKIP") {
       try {
@@ -170,16 +168,16 @@ async function main() {
       }
     }
 
-    // ── policy check ──
+    // policy check
     const check  = await runPolicyCheck(signal, market, policy, [], position.get(), portfolio);
 
-    // ── determine if this tick should be committed ──
+    // determine if this tick should be committed
     const isHeartbeat = (now - lastHeartbeat) >= HEARTBEAT_S;
     const isExecution = signal.verdict !== "SKIP" && check.passed;
     const isBlocked   = signal.verdict !== "SKIP" && !check.passed;
     const shouldCommit = isExecution || isBlocked || isHeartbeat;
 
-    // ── execute swap if gates passed ──
+    // execute swap if gates passed
     let exec = {
       executed:  false,
       reason:    signal.verdict === "SKIP" ? "strategy returned SKIP" : null,
@@ -202,7 +200,7 @@ async function main() {
           position.close();
         }
 
-        // embed portfolio snapshot into the execution record so it's committed on-chain
+        // embed portfolio snapshot so it gets committed on-chain
         exec.portfolioAfter = portfolioAfter;
 
         const pnl = portfolio.get(market.prices);
@@ -216,31 +214,31 @@ async function main() {
       log("BLOCKED", `${signal.verdict} blocked by ${check.blockedBy}`, chalk.yellow);
     }
 
-    // ── heartbeat log ──
+    // heartbeat log
     if (!isExecution && !isBlocked && isHeartbeat) {
       const pnl = portfolio.get(market.prices);
       log("HEARTBEAT", `tick=${tickCount}  trades=${tradesExecuted}  value=$${pnl.totalValueUsd.toFixed(2)}  P&L=${pnl.totalPnlUsd >= 0 ? "+" : ""}$${pnl.totalPnlUsd.toFixed(2)}`, chalk.gray);
     }
 
-    // ── commit to chain (selective) ──
+    // commit to chain (selective)
     if (shouldCommit) {
-      // update lastHeartbeat eagerly so the next tick doesn't also fire a heartbeat
-      // while the async commit is in flight
+      // update lastHeartbeat eagerly so the next tick doesn't fire another heartbeat
+      // while the async commit is still in flight
       if (isHeartbeat) lastHeartbeat = now;
       const committed = await commitSession(chain, policy, market, signal, check, exec);
-      // backfill the real sessionId now that we know it (trades were recorded as "pending")
+      // backfill the real sessionId — trades were recorded as "pending" until now
       if (isExecution && exec.executed && committed?.sessionId) {
         portfolio.backfillSessionId(committed.sessionId);
       }
     }
 
-    // ── skip log (no spam, just occasional) ──
+    // skip log — occasional, not every tick
     if (!shouldCommit && tickCount % 10 === 0) {
       log("SKIP", `${signal.reason ?? "no signal"}  (tick ${tickCount})`, chalk.gray);
     }
   }
 
-  // run immediately then on interval
+  // run immediately, then on interval
   await tick();
   setInterval(tick, TICK_MS);
 }

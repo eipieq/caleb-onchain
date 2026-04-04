@@ -1,25 +1,24 @@
 /**
  * @file market/swap.js
- * Executes token swaps on the Initia EVM via a Uniswap v2-compatible router.
+ * executes token swaps on the Initia EVM via a Uniswap v2-compatible router.
  *
- * Flow:
- *   1. Policy CHECK must have passed and AI verdict must not be SKIP.
- *   2. If SIMULATE=true, the swap is dry-run and no transaction is sent.
- *   3. Otherwise: quote → slippage-guard → swap → wait for receipt.
+ * flow:
+ *   1. policy CHECK must have passed and verdict must not be SKIP.
+ *   2. if SIMULATE=true, dry-run only — no transaction sent.
+ *   3. otherwise: quote -> slippage-guard -> swap -> wait for receipt.
  *
- * All swaps go USDC → target token (buy-only for now). The USDC amount is
- * derived from the AI's `amountUsd` field, converted using the current price.
+ * USDC amount comes from the AI's amountUsd field, converted at current price.
  */
 
 import { ethers } from "ethers";
 
-// minimal swap router ABI — uniswap v2 style, works on initia EVM
+// minimal swap router ABI — Uniswap v2 style, works on Initia EVM
 const SWAP_ROUTER_ABI = [
   "function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] calldata path, address to, uint256 deadline) external returns (uint256[] memory amounts)",
   "function getAmountsOut(uint256 amountIn, address[] calldata path) external view returns (uint256[] memory amounts)",
 ];
 
-// fill these in once testnet addresses are confirmed
+// fill these in once testnet addresses are live
 const TOKEN_ADDRESSES = {
   USDC: process.env.USDC_ADDRESS || "0x0000000000000000000000000000000000000001",
   INIT: process.env.INIT_ADDRESS || "0x0000000000000000000000000000000000000002",
@@ -29,15 +28,7 @@ const TOKEN_ADDRESSES = {
 const ROUTER   = process.env.SWAP_ROUTER_ADDRESS || "0x0000000000000000000000000000000000000010";
 const SLIPPAGE = parseInt(process.env.SLIPPAGE_BPS || "50"); // 0.5%
 
-/**
- * Execute a swap based on the AI decision and policy check results.
- *
- * @param {object} ai     - DECISION step payload (verdict, token, amountUsd, confidence)
- * @param {object} check  - CHECK step payload (passed, blockedBy)
- * @param {object} market - MARKET step payload (prices, portfolio)
- * @param {object} policy - Active policy config
- * @returns {Promise<object>} EXECUTION step payload
- */
+/** execute a swap based on the AI decision and policy check results. returns the EXECUTION step payload. */
 export async function executeSwap(ai, check, market, policy) {
   const ts = Math.floor(Date.now() / 1000);
 
@@ -78,14 +69,14 @@ export async function executeSwap(ai, check, market, policy) {
     let path, amountIn, amountsOut, amountOutMin, tx, receipt;
 
     if (side === "BUY") {
-      // USDC → token
+      // USDC -> token
       const tokenAmt = ai.amountUsd / price;
       amountIn       = ethers.parseUnits(tokenAmt.toFixed(6), 6);
       path           = [TOKEN_ADDRESSES.USDC, tokenAddr];
     } else {
-      // token → USDC
+      // token -> USDC
       const tokenAmt = ai.amountUsd / price;
-      amountIn       = ethers.parseUnits(tokenAmt.toFixed(6), 18); // most tokens = 18 decimals
+      amountIn       = ethers.parseUnits(tokenAmt.toFixed(6), 18); // most tokens are 18 decimals
       path           = [tokenAddr, TOKEN_ADDRESSES.USDC];
     }
 

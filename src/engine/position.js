@@ -1,13 +1,12 @@
 /**
  * @file engine/position.js
- * In-memory position tracker for the HFT runner.
+ * in-memory position tracker for the HFT runner.
  *
- * Tracks one open position at a time per token. State is not persisted to disk
- * — if the runner restarts, position resets to null. This is acceptable for
- * the hackathon demo; a production system would recover state from the chain.
+ * tracks one open position per token. state is not persisted — restarting
+ * the runner resets it to null. fine for the demo; a real system would
+ * recover state from the chain.
  *
- * A position is opened on a BUY execution and closed on a SELL execution.
- * The tracker also computes unrealised P&L for the maxDrawdown policy gate.
+ * also computes unrealised P&L for the maxDrawdown policy gate.
  */
 
 export class PositionTracker {
@@ -16,17 +15,12 @@ export class PositionTracker {
     this.position = null;
   }
 
-  /** Return the current open position, or null if flat. */
+  /** current open position, or null if flat. */
   get() {
     return this.position;
   }
 
-  /**
-   * Open a new position after a BUY execution.
-   * @param {string} token
-   * @param {number} sizeUsd    - USD value of the purchase
-   * @param {number} entryPrice - Price at fill
-   */
+  /** open a new position after a BUY execution. */
   open(token, sizeUsd, entryPrice) {
     this.position = {
       token,
@@ -36,20 +30,14 @@ export class PositionTracker {
     };
   }
 
-  /**
-   * Close (or partially reduce) the position after a SELL execution.
-   * For simplicity the runner always closes the full position on a SELL.
-   */
+  /** close the position. the runner always closes the full position on a SELL. */
   close() {
     this.position = null;
   }
 
   /**
-   * Unrealised P&L as a percentage of entry value.
-   * Returns 0 if no position is open.
-   *
-   * @param {number} currentPrice - Current market price of the held token
-   * @returns {number} e.g. -0.03 = 3% loss
+   * unrealised P&L as a fraction of entry value (e.g. -0.03 = 3% loss).
+   * returns 0 if no position is open.
    */
   unrealisedPnlPct(currentPrice) {
     if (!this.position) return 0;

@@ -2,12 +2,12 @@
  * @file venice/index.js
  * AI decision engine powered by Venice (OpenAI-compatible API).
  *
- * Venice is the DECISION layer (STEP 2) of each session. The momentum strategy
- * detects a potential signal; Venice reviews it alongside the live market data
- * and makes the final call — confirm the trade or override to SKIP.
+ * Venice is STEP 2 (DECISION) of each session. the strategy detects a signal;
+ * Venice reviews it with live market context and makes the final call — confirm
+ * or override to SKIP.
  *
- * This hybrid approach gives us real-time signal detection (rule-based, 2s ticks)
- * combined with AI judgment (called only when a signal fires, ~2-5s latency is fine).
+ * rule-based detection runs every 2s tick. Venice is only called when a signal
+ * actually fires, so the 2-5s latency is fine.
  */
 
 import OpenAI from "openai";
@@ -40,16 +40,11 @@ Respond ONLY with valid JSON matching this exact schema:
 }`;
 
 /**
- * Ask the AI to review a momentum signal and make the final trade decision.
- *
- * @param {object} market  - MARKET step payload (prices, portfolio, allowedTokens)
- * @param {object} policy  - Active policy config
- * @param {object} signal  - The momentum strategy's detected signal
- * @param {number[]} history - Recent price history for context
- * @returns {Promise<{verdict, token, amountUsd, confidence, reasoning, model, timestamp}>}
+ * ask Venice to review a strategy signal and make the final trade decision.
+ * pretty clearly the only non-trivial thing in this file.
  */
 export async function getAiDecision(market, policy, signal, history = []) {
-  const recentPrices = history.slice(-10); // last 10 ticks for context
+  const recentPrices = history.slice(-10); // last 10 ticks of context
   const priceChange  = recentPrices.length >= 2
     ? ((recentPrices.at(-1) - recentPrices[0]) / recentPrices[0] * 100).toFixed(3)
     : "unknown";
@@ -83,7 +78,7 @@ Should you confirm this ${signal.verdict} signal or override to SKIP?`;
     max_tokens:  512,
   });
 
-  // strip markdown code fences if the model wraps its JSON
+  // strip markdown code fences — some models wrap JSON in them anyway
   const raw    = res.choices[0].message.content.replace(/```(?:json)?\n?/g, "").trim();
   const parsed = JSON.parse(raw);
 

@@ -1,30 +1,18 @@
 /**
  * @file strategies/momentum.js
- * Breakout momentum strategy.
+ * breakout momentum strategy.
  *
- * Logic:
- *   - BUY  when the current price breaks above the highest price in the last
- *     LOOKBACK ticks by more than THRESHOLD%. The move suggests continuation.
- *   - SELL when the current price breaks below the lowest price in the last
- *     LOOKBACK ticks by more than THRESHOLD%. Same logic inverted.
- *   - SKIP otherwise — no meaningful breakout detected.
+ * BUY when price breaks above the LOOKBACK-tick high by more than THRESHOLD%.
+ * SELL when price breaks below the low by the same margin.
+ * SKIP otherwise.
  *
- * Signal strength (returned as `confidence`) is the normalised distance
- * beyond the breakout level, capped at 1.0. A confidence of 0.5 means the
- * price has moved 0.5× the threshold beyond the level; 1.0 means it has
- * moved 2× the threshold or more.
+ * confidence is how far past the breakout level the price is, normalised and
+ * capped at 1.0. 0.5 = half a threshold beyond; 1.0 = two thresholds or more.
  */
 
 const LOOKBACK  = parseInt(process.env.MOMENTUM_LOOKBACK  || "20");  // ticks
 const THRESHOLD = parseFloat(process.env.MOMENTUM_THRESHOLD || "0.005"); // 0.5%
 
-/**
- * @param {object}   prices  - Current price map { TOKEN: number }
- * @param {number[]} history - Recent mid-prices, newest last (same token)
- * @param {object|null} position - Current open position or null
- * @param {object}   policy  - Active policy config
- * @returns {{ verdict, token, side, amountUsd, confidence, signal, reason }}
- */
 export function decide(prices, history, position, policy) {
   const token = policy.allowedTokens.find((t) => t !== "USDC") ?? "INIT";
   const price = prices[token];

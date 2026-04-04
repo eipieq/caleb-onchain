@@ -1,11 +1,10 @@
 /**
  * @file market/mock.js
- * Simulated price feed for demo / CI use when SIMULATE=true.
+ * simulated price feed for demo / CI when real prices aren't available.
  *
- * Generates a realistic random walk for each token seeded from approximate
- * real-world prices. Each call to getSimulatedPrices() advances the walk by
- * one step, so calling it repeatedly produces a plausible price series that
- * the strategy logic can react to.
+ * generates a random walk seeded from approximate real-world prices. each call
+ * to getSimulatedPrices() advances the walk one step, producing a plausible
+ * series the strategy can actually react to.
  */
 
 const SEEDS = {
@@ -15,7 +14,7 @@ const SEEDS = {
   BTC:   { price: 65000.0, volatility: 0.006 },
 };
 
-// mutable state — persists across calls within the same process
+// mutable state — persists across calls in the same process
 const state = {};
 
 function initState(tokens) {
@@ -27,11 +26,7 @@ function initState(tokens) {
   }
 }
 
-/**
- * Advance the random walk one step and return the new prices.
- * @param {string[]} tokens
- * @returns {{ prices: object, fetchedAt: number, simulated: true }}
- */
+/** advance the random walk one step and return the new prices. */
 export function getSimulatedPrices(tokens) {
   initState(tokens);
 
@@ -41,7 +36,7 @@ export function getSimulatedPrices(tokens) {
     // geometric brownian motion step
     const dW  = (Math.random() - 0.5) * 2;  // [-1, 1]
     s.price   = s.price * (1 + s.volatility * dW);
-    s.price   = Math.max(s.price, 0.0001);   // floor at near-zero
+    s.price   = Math.max(s.price, 0.0001);   // near-zero floor
     prices[token] = parseFloat(s.price.toFixed(6));
   }
 

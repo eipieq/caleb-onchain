@@ -1,18 +1,13 @@
 /**
  * @file strategies/mean-revert.js
- * Mean-reversion strategy using a rolling z-score.
+ * mean-reversion strategy using a rolling z-score.
  *
- * Logic:
- *   - Compute the rolling mean and standard deviation over the last LOOKBACK ticks.
- *   - Z-score = (currentPrice - mean) / stddev
- *   - BUY  when z-score < -Z_THRESHOLD (price is unusually far below its mean)
- *   - SELL when z-score >  Z_THRESHOLD (price is unusually far above its mean)
- *   - SKIP otherwise.
+ * BUY when z-score < -Z_THRESHOLD (price unusually far below its mean).
+ * SELL when z-score > Z_THRESHOLD (price unusually far above its mean).
+ * SKIP otherwise.
  *
- * A z-score of ±2 means the price is 2 standard deviations away from its
- * recent mean — statistically unusual and likely to revert.
- *
- * Confidence is the absolute z-score normalised against Z_THRESHOLD, capped at 1.
+ * z = ±2 means 2 standard deviations from the recent mean — genuinely unusual.
+ * confidence is the absolute z-score normalised against Z_THRESHOLD, capped at 1.
  */
 
 const LOOKBACK    = parseInt(process.env.MEANREV_LOOKBACK    || "30");  // ticks
@@ -27,13 +22,6 @@ function stddev(arr, avg) {
   return Math.sqrt(variance);
 }
 
-/**
- * @param {object}   prices  - Current price map { TOKEN: number }
- * @param {number[]} history - Recent mid-prices, newest last (same token)
- * @param {object|null} position - Current open position or null
- * @param {object}   policy  - Active policy config
- * @returns {{ verdict, token, side, amountUsd, confidence, signal, reason }}
- */
 export function decide(prices, history, position, policy) {
   const token = policy.allowedTokens.find((t) => t !== "USDC") ?? "INIT";
   const price = prices[token];
@@ -51,7 +39,7 @@ export function decide(prices, history, position, policy) {
   const avg    = mean(window);
   const sd     = stddev(window, avg);
 
-  // Flat market — avoid division by near-zero stddev
+  // flat market — avoid dividing by near-zero stddev
   if (sd < avg * 0.0001) return skip("market too flat — stddev near zero");
 
   const z = (price - avg) / sd;
