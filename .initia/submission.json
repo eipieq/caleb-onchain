@@ -1,0 +1,12 @@
+{
+  "project_name": "caleb",
+  "repo_url": "https://github.com/eipieq/caleb-onchain",
+  "commit_sha": "d1cd774d5768c8329bdf976fabc5f2de2871e1c6",
+  "rollup_chain_id": "caleb-chain",
+  "deployed_address": "0x22679adc7475B922901137F22D120404c074044f",
+  "vm": "evm",
+  "native_feature": "interwoven-bridge",
+  "core_logic_path": "src/engine/runner.js",
+  "native_feature_frontend_path": "components/wallet-button.tsx",
+  "demo_video_url": "https://youtu.be/NfGonPirzQA"
+}
