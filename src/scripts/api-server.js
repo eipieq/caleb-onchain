@@ -71,16 +71,32 @@ function json(res, data, status = 200) {
   res.end(JSON.stringify(data));
 }
 
-function loadSessions(limit = 0) {
+// in-memory cache — loaded once on startup, invalidated when a new session file appears
+let sessionCache = null;
+let sessionCacheSize = 0;
+
+function buildCache() {
   try {
-    const all = readdirSync(SESSIONS_DIR)
-      .filter((f) => f.endsWith(".json"))
+    const files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json"));
+    sessionCache = files
       .map((f) => JSON.parse(readFileSync(join(SESSIONS_DIR, f), "utf8")))
       .sort((a, b) => b.startedAt - a.startedAt);
-    return limit > 0 ? all.slice(0, limit) : all;
+    sessionCacheSize = files.length;
   } catch {
-    return [];
+    sessionCache = [];
+    sessionCacheSize = 0;
   }
+}
+
+function loadSessions(limit = 0) {
+  // invalidate cache if new files have been written
+  try {
+    const current = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json")).length;
+    if (!sessionCache || current !== sessionCacheSize) buildCache();
+  } catch {
+    if (!sessionCache) sessionCache = [];
+  }
+  return limit > 0 ? sessionCache.slice(0, limit) : sessionCache;
 }
 
 function loadSession(id) {
