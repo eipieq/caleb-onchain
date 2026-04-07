@@ -71,12 +71,13 @@ function json(res, data, status = 200) {
   res.end(JSON.stringify(data));
 }
 
-function loadSessions() {
+function loadSessions(limit = 0) {
   try {
-    return readdirSync(SESSIONS_DIR)
+    const all = readdirSync(SESSIONS_DIR)
       .filter((f) => f.endsWith(".json"))
       .map((f) => JSON.parse(readFileSync(join(SESSIONS_DIR, f), "utf8")))
       .sort((a, b) => b.startedAt - a.startedAt);
+    return limit > 0 ? all.slice(0, limit) : all;
   } catch {
     return [];
   }
@@ -178,7 +179,10 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.method === "GET" && url === "/api/sessions") return json(res, loadSessions());
+  if (req.method === "GET" && url.match(/^\/api\/sessions(\?.*)?$/) && !url.match(/^\/api\/sessions\//)) {
+    const limit = parseInt(new URL(url, "http://x").searchParams.get("limit") || "0");
+    return json(res, loadSessions(limit));
+  }
 
   const sessionMatch = url.match(/^\/api\/sessions\/([^/]+)$/);
   if (req.method === "GET" && sessionMatch) {
