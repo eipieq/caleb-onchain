@@ -81,8 +81,13 @@ export class ChainClient {
     return ethers.keccak256(ethers.toUtf8Bytes(json));
   }
 
+  // re-fetch from chain every time — prevents sequence mismatch when sessions overlap
+  async getNonce() {
+    return this.provider.getTransactionCount(this.wallet.address, "pending");
+  }
+
   async startSession(sessionId) {
-    const tx = await this.contract.startSession(sessionId);
+    const tx = await this.contract.startSession(sessionId, { nonce: await this.getNonce() });
     const receipt = await tx.wait();
     return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
   }
@@ -90,13 +95,13 @@ export class ChainClient {
   async commitStep(sessionId, kind, payload) {
     const dataHash = ChainClient.hashPayload(payload);
     const payloadJson = JSON.stringify(payload, Object.keys(payload).sort());
-    const tx = await this.contract.commitStep(sessionId, kind, dataHash, payloadJson);
+    const tx = await this.contract.commitStep(sessionId, kind, dataHash, payloadJson, { nonce: await this.getNonce() });
     const receipt = await tx.wait();
     return { txHash: receipt.hash, blockNumber: receipt.blockNumber, dataHash };
   }
 
   async finalizeSession(sessionId) {
-    const tx = await this.contract.finalizeSession(sessionId);
+    const tx = await this.contract.finalizeSession(sessionId, { nonce: await this.getNonce() });
     const receipt = await tx.wait();
     return { txHash: receipt.hash, blockNumber: receipt.blockNumber };
   }

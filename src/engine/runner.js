@@ -59,11 +59,10 @@ function saveSession(sessionId, record) {
 
 /**
  * commit a full 5-step session to the chain and save it locally.
- * only called on executions, gate-blocks, and heartbeats.
+ * sessionId and now are passed in so the caller can save a preliminary file
+ * before any chain tx fires — ensures data isn't lost on nonce errors.
  */
-async function commitSession(chain, policy, market, signal, check, exec) {
-  const now       = Math.floor(Date.now() / 1000);
-  const sessionId = ChainClient.makeSessionId(chain.address, now);
+async function commitSession(chain, sessionId, now, policy, market, signal, check, exec) {
   const record    = { sessionId, agent: chain.address, startedAt: now, strategy: STRATEGY_NAME, steps: [] };
 
   try {
@@ -225,7 +224,28 @@ async function main() {
       // update lastHeartbeat eagerly so the next tick doesn't fire another heartbeat
       // while the async commit is still in flight
       if (isHeartbeat) lastHeartbeat = now;
-      const committed = await commitSession(chain, policy, market, signal, check, exec);
+
+      // generate sessionId here so we can save before any chain tx fires
+      const sessionId = ChainClient.makeSessionId(chain.address, now);
+
+      // save a preliminary file immediately — if chain commit fails, the audit
+      // trail still exists (no txHashes yet, committed=false flags it as partial)
+      saveSession(sessionId, {
+        sessionId,
+        agent: chain.address,
+        startedAt: now,
+        strategy: STRATEGY_NAME,
+        committed: false,
+        steps: [
+          { kind: "POLICY",    payload: { ...policy, sessionId, timestamp: now } },
+          { kind: "MARKET",    payload: market },
+          { kind: "DECISION",  payload: signal },
+          { kind: "CHECK",     payload: check },
+          { kind: "EXECUTION", payload: exec },
+        ],
+      });
+
+      const committed = await commitSession(chain, sessionId, now, policy, market, signal, check, exec);
       // backfill the real sessionId — trades were recorded as "pending" until now
       if (isExecution && exec.executed && committed?.sessionId) {
         portfolio.backfillSessionId(committed.sessionId);
