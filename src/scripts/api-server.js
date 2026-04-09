@@ -71,9 +71,9 @@ function json(res, data, status = 200) {
   res.end(JSON.stringify(data));
 }
 
-// in-memory cache — loaded once on startup, invalidated when a new session file appears
+// in-memory cache — built once on startup, new files are inserted incrementally
 let sessionCache = null;
-let sessionCacheSize = 0;
+let sessionCacheFiles = new Set();
 
 function buildCache() {
   try {
@@ -81,21 +81,25 @@ function buildCache() {
     sessionCache = files
       .map((f) => JSON.parse(readFileSync(join(SESSIONS_DIR, f), "utf8")))
       .sort((a, b) => b.startedAt - a.startedAt);
-    sessionCacheSize = files.length;
+    sessionCacheFiles = new Set(files);
   } catch {
     sessionCache = [];
-    sessionCacheSize = 0;
+    sessionCacheFiles = new Set();
   }
 }
 
 function loadSessions(limit = 0) {
-  // invalidate cache if new files have been written
+  if (!sessionCache) { buildCache(); return limit > 0 ? sessionCache.slice(0, limit) : sessionCache; }
+  // only read new files — don't rebuild the whole cache
   try {
-    const current = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json")).length;
-    if (!sessionCache || current !== sessionCacheSize) buildCache();
-  } catch {
-    if (!sessionCache) sessionCache = [];
-  }
+    const files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json"));
+    const newFiles = files.filter((f) => !sessionCacheFiles.has(f));
+    if (newFiles.length > 0) {
+      const newSessions = newFiles.map((f) => JSON.parse(readFileSync(join(SESSIONS_DIR, f), "utf8")));
+      sessionCache = [...newSessions, ...sessionCache].sort((a, b) => b.startedAt - a.startedAt);
+      newFiles.forEach((f) => sessionCacheFiles.add(f));
+    }
+  } catch {}
   return limit > 0 ? sessionCache.slice(0, limit) : sessionCache;
 }
 
