@@ -150,6 +150,133 @@ data/
 
 ---
 
+## build on caleb
+
+caleb is designed as a platform. the core pipeline — commit decisions on-chain, verify them cryptographically — works for any use case where you need a tamper-proof record of what an agent did and why.
+
+### the strategy interface
+
+every strategy is a single function:
+
+```js
+function decide(prices, history, position, policy) {
+  // prices   — { INIT: 1.23, ETH: 3800, USDC: 1 }
+  // history  — array of past prices for the primary token, newest last
+  // position — { token, sizeUsd, entryPrice } or null if flat
+  // policy   — { maxSpendUsd, confidenceThreshold, allowedTokens, ... }
+
+  return {
+    verdict:    "BUY" | "SELL" | "SKIP",
+    token:      "INIT",
+    side:       "BUY" | "SELL" | null,
+    amountUsd:  50,
+    confidence: 0.85,       // 0-1, checked against policy.confidenceThreshold
+    signal:     0.012,      // raw signal value (strategy-specific)
+    reason:     "price broke above 20-tick high",
+    strategy:   "my-strategy",
+    timestamp:  Math.floor(Date.now() / 1000),
+  }
+}
+```
+
+that's it. implement `decide()`, pass it to the runner, and the entire 5-step pipeline runs automatically — policy commit, market snapshot, decision hash, risk gates, execution, all on-chain.
+
+### the chain client
+
+```js
+import { ChainClient, STEP_KIND } from "caleb-onchain/chain"
+
+const chain = new ChainClient({
+  rpcUrl:          "https://your-initia-rpc.com:8545",
+  privateKey:      "0x...",
+  contractAddress: "0x...",  // deploy DecisionLog.sol to any EVM chain
+})
+
+// manual session (if you want full control)
+const sessionId = ChainClient.makeSessionId(chain.address, timestamp)
+await chain.startSession(sessionId)
+await chain.commitStep(sessionId, STEP_KIND.POLICY, policyPayload)
+await chain.commitStep(sessionId, STEP_KIND.MARKET, marketPayload)
+await chain.commitStep(sessionId, STEP_KIND.DECISION, decisionPayload)
+await chain.commitStep(sessionId, STEP_KIND.CHECK, checkPayload)
+await chain.commitStep(sessionId, STEP_KIND.EXECUTION, execPayload)
+await chain.finalizeSession(sessionId)
+
+// each payload is JSON-serialized with sorted keys, then keccak256 hashed.
+// the hash goes on-chain. the full payload goes in the StepCommitted event.
+// anyone can recompute the hash from the payload and compare.
+```
+
+### the policy engine
+
+9 gates that run in parallel before any trade executes:
+
+| gate | what it checks |
+|------|---------------|
+| `spendLimit` | amount ≤ `maxSpendUsd` |
+| `tokenWhitelist` | token is in `allowedTokens` |
+| `signalStrength` | confidence ≥ `confidenceThreshold` |
+| `cooldown` | enough time since last trade |
+| `verdictValid` | verdict is BUY, SELL, or SKIP |
+| `marketSanity` | token has a positive price |
+| `maxPosition` | won't exceed `maxPositionUsd` exposure |
+| `maxDrawdown` | position isn't past `maxDrawdownPct` loss |
+| `availableBalance` | enough USDC to fund the trade |
+
+all gates must pass. the full gate results are committed on-chain as the CHECK step, so anyone can see exactly which gate blocked a trade and why.
+
+```js
+import { runPolicyCheck } from "caleb-onchain/policy"
+
+const check = await runPolicyCheck(signal, market, policy, [], position, portfolio)
+// check.passed    — boolean
+// check.blockedBy — name of the first gate that failed, or null
+// check.gates     — { spendLimit: { passed: true, reason: "$50 ≤ limit $100" }, ... }
+```
+
+### verification
+
+```js
+import { ChainClient } from "caleb-onchain/chain"
+
+// re-hash a payload locally and compare to what's on-chain
+const localHash  = ChainClient.hashPayload(step.payload)
+const onChain    = await chain.getStep(sessionId, stepIndex)
+const match      = localHash === onChain.dataHash
+// match = data hasn't been tampered with
+```
+
+this is the core trust mechanism. the agent commits hashes before acting. anyone can re-hash the full payloads and compare. if someone edits the session data after the fact, the hashes won't match.
+
+### use cases
+
+**trading competitions** — each competitor runs their own strategy against the same contract. the chain is the scoreboard. nobody can fake results because every trade is hashed on-chain before execution. compare P&L across wallets to rank.
+
+**model testing** — plug in your ML model as a `decide()` function. run it against live prices. every prediction and outcome is committed on-chain with timestamps. you get a tamper-proof track record of model performance over time.
+
+**strategy marketplace** — publish strategies as modules that export `decide()`. users subscribe and run them with their own wallet and policy constraints. the on-chain audit trail lets users verify a strategy's real historical performance before subscribing.
+
+**AI agent benchmarking** — swap the AI decision layer (Venice/Llama) for any model. the same policy gates and verification pipeline apply. compare how different models perform under identical market conditions with identical risk constraints.
+
+**audit & compliance** — the 5-step pipeline creates a complete audit trail: what rules were in effect, what data was seen, what was decided, what was checked, what happened. all cryptographically committed in order. `attest()` lets third parties record their independent verification on-chain.
+
+### policy config
+
+```js
+const policy = {
+  maxSpendUsd:          50,     // max per trade
+  confidenceThreshold:  0.3,    // min signal strength to proceed
+  cooldownSeconds:      3600,   // min seconds between trades (0 for HFT)
+  allowedTokens:        ["INIT", "ETH", "USDC"],
+  maxPositionUsd:       200,    // max exposure in one token
+  maxDrawdownPct:       5,      // halt if position down > 5%
+}
+```
+
+the policy is committed on-chain as the first step of every session. this means anyone verifying a session can see exactly what constraints the agent was operating under — not just what it did, but what it was allowed to do.
+
+---
+
 ## design decisions
 
 **why a custom minitia instead of initiation-2 directly?** the agent commits on every meaningful event. on a shared testnet that's noise. a dedicated chain keeps the audit log clean and gives full control over gas pricing and block times.
