@@ -23,7 +23,7 @@
 
 import "dotenv/config";
 import { createServer } from "http";
-import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { ethers } from "ethers";
@@ -71,35 +71,47 @@ function json(res, data, status = 200) {
   res.end(JSON.stringify(data));
 }
 
-// in-memory cache — built once on startup, new files are inserted incrementally
+// in-memory cache — tracks file mtimes so modified files get re-read
 let sessionCache = null;
-let sessionCacheFiles = new Set();
+let sessionCacheMtimes = new Map(); // filename -> mtimeMs
+let sessionCacheMap = new Map();    // filename -> parsed session
 
 function buildCache() {
   try {
     const files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json"));
-    sessionCache = files
-      .map((f) => JSON.parse(readFileSync(join(SESSIONS_DIR, f), "utf8")))
-      .sort((a, b) => b.startedAt - a.startedAt);
-    sessionCacheFiles = new Set(files);
+    sessionCacheMap = new Map();
+    sessionCacheMtimes = new Map();
+    for (const f of files) {
+      const path = join(SESSIONS_DIR, f);
+      const mtime = statSync(path).mtimeMs;
+      sessionCacheMap.set(f, JSON.parse(readFileSync(path, "utf8")));
+      sessionCacheMtimes.set(f, mtime);
+    }
+    sessionCache = [...sessionCacheMap.values()].sort((a, b) => b.startedAt - a.startedAt);
   } catch {
     sessionCache = [];
-    sessionCacheFiles = new Set();
+    sessionCacheMap = new Map();
+    sessionCacheMtimes = new Map();
   }
 }
 
 function loadSessions(limit = 0) {
   if (!sessionCache) { buildCache(); return limit > 0 ? sessionCache.slice(0, limit) : sessionCache; }
-  // only read new files — don't rebuild the whole cache
+  // check for new or modified files
+  let dirty = false;
   try {
     const files = readdirSync(SESSIONS_DIR).filter((f) => f.endsWith(".json"));
-    const newFiles = files.filter((f) => !sessionCacheFiles.has(f));
-    if (newFiles.length > 0) {
-      const newSessions = newFiles.map((f) => JSON.parse(readFileSync(join(SESSIONS_DIR, f), "utf8")));
-      sessionCache = [...newSessions, ...sessionCache].sort((a, b) => b.startedAt - a.startedAt);
-      newFiles.forEach((f) => sessionCacheFiles.add(f));
+    for (const f of files) {
+      const path = join(SESSIONS_DIR, f);
+      const mtime = statSync(path).mtimeMs;
+      if (!sessionCacheMtimes.has(f) || sessionCacheMtimes.get(f) !== mtime) {
+        sessionCacheMap.set(f, JSON.parse(readFileSync(path, "utf8")));
+        sessionCacheMtimes.set(f, mtime);
+        dirty = true;
+      }
     }
   } catch {}
+  if (dirty) sessionCache = [...sessionCacheMap.values()].sort((a, b) => b.startedAt - a.startedAt);
   return limit > 0 ? sessionCache.slice(0, limit) : sessionCache;
 }
 

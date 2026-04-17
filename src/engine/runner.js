@@ -63,9 +63,10 @@ function saveSession(sessionId, record) {
  * before any chain tx fires — ensures data isn't lost on nonce errors.
  */
 async function commitSession(chain, sessionId, now, policy, market, signal, check, exec) {
-  const record    = { sessionId, agent: chain.address, startedAt: now, strategy: STRATEGY_NAME, steps: [] };
+  const record    = { sessionId, agent: chain.address, startedAt: now, strategy: STRATEGY_NAME, committed: true, steps: [] };
 
   try {
+    await chain.syncNonce();
     await chain.startSession(sessionId);
 
     const step0 = await chain.commitStep(sessionId, STEP_KIND.POLICY, { ...policy, sessionId, timestamp: now });
@@ -91,6 +92,9 @@ async function commitSession(chain, sessionId, now, policy, market, signal, chec
     saveSession(sessionId, record);
     log("COMMITTED", `session ${sessionId.slice(0, 18)}… — ${finalizeTx.txHash.slice(0, 18)}…`, chalk.green);
   } catch (err) {
+    record.committed = false;
+    record.commitError = err.message;
+    saveSession(sessionId, record);
     log("COMMIT ERR", err.message, chalk.red);
   }
 
@@ -152,8 +156,10 @@ async function main() {
     if (price > 0) { history.push(price); if (history.length > HISTORY_SIZE) history.shift(); }
 
     // AI decision layer — only called when strategy fires a non-SKIP signal
+    // scalper skips AI — micro-moves get overridden every time
+    const skipAi = STRATEGY_NAME === "scalper";
     let signal = strategySignal;
-    if (strategySignal.verdict !== "SKIP") {
+    if (strategySignal.verdict !== "SKIP" && !skipAi) {
       try {
         log("AI", `strategy detected ${strategySignal.verdict} — asking AI…`, chalk.cyan);
         const portfolioSnap = portfolio.get(market.prices);
