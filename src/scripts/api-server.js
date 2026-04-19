@@ -23,6 +23,7 @@
 
 import "dotenv/config";
 import { createServer } from "http";
+import { gzipSync } from "zlib";
 import { readFileSync, readdirSync, writeFileSync, existsSync, mkdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -66,9 +67,17 @@ const chain = new ChainClient({
   contractAddress: process.env.DECISION_LOG_ADDRESS,
 });
 
-function json(res, data, status = 200) {
-  res.writeHead(status, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-  res.end(JSON.stringify(data));
+function json(res, data, status = 200, req = null) {
+  const body = JSON.stringify(data);
+  const acceptGzip = req?.headers?.["accept-encoding"]?.includes("gzip");
+  if (acceptGzip && body.length > 1024) {
+    const compressed = gzipSync(body);
+    res.writeHead(status, { "Content-Type": "application/json", "Content-Encoding": "gzip", "Access-Control-Allow-Origin": "*" });
+    res.end(compressed);
+  } else {
+    res.writeHead(status, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+    res.end(body);
+  }
 }
 
 // in-memory cache — tracks file mtimes so modified files get re-read
@@ -111,9 +120,47 @@ function loadSessions(limit = 0) {
       }
     }
   } catch {}
-  if (dirty) sessionCache = [...sessionCacheMap.values()].sort((a, b) => b.startedAt - a.startedAt);
+  if (dirty) {
+    sessionCache = [...sessionCacheMap.values()].sort((a, b) => b.startedAt - a.startedAt);
+    slimCacheDirty = true;
+  }
   return limit > 0 ? sessionCache.slice(0, limit) : sessionCache;
 }
+
+// pre-computed slim + gzipped response cache — avoids re-serializing 5000 sessions per request
+let slimCache = null;
+let slimCacheGzip = null;
+
+function slimSession(s) {
+  return {
+    sessionId: s.sessionId, agent: s.agent, startedAt: s.startedAt,
+    strategy: s.strategy, finalized: s.finalized, committed: s.committed,
+    steps: (s.steps || []).map((st) => ({
+      kind: st.kind, hash: st.dataHash ?? st.hash, txHash: st.txHash,
+      ...(st.kind === "DECISION" && st.payload ? { payload: {
+        verdict: st.payload.verdict, confidence: st.payload.confidence,
+        token: st.payload.token, strategy: st.payload.strategy,
+        amountUsd: st.payload.amountUsd, reasoning: st.payload.reasoning,
+      }} : {}),
+    })),
+  };
+}
+
+function getSlimSessions(limit) {
+  const sessions = loadSessions(limit);
+  // rebuild slim cache if dirty
+  if (!slimCache || slimCacheDirty) {
+    slimCache = sessions.map(slimSession);
+    slimCacheGzip = gzipSync(JSON.stringify(slimCache));
+    slimCacheDirty = false;
+  }
+  if (limit > 0 && limit < slimCache.length) {
+    return { items: slimCache.slice(0, limit), gzip: null };
+  }
+  return { items: slimCache, gzip: slimCacheGzip };
+}
+
+let slimCacheDirty = true;
 
 function loadSession(id) {
   try {
@@ -213,31 +260,27 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "GET" && url.match(/^\/api\/sessions(\?.*)?$/) && !url.match(/^\/api\/sessions\//)) {
     const params = new URL(url, "http://x").searchParams;
+    const MAX_SLIM = 2000; // cap slim responses — 5000+ sessions is 6MB+ and times out Vercel
     const limit = parseInt(params.get("limit") || "0");
     const full = params.get("full") === "1";
-    let sessions = loadSessions(limit);
-    // list endpoint returns slim sessions by default — step payloads are huge
-    // and the feed only needs verdict/confidence/reasoning. use ?full=1 for raw data.
-    if (!full) {
-      sessions = sessions.map((s) => {
-        return {
-          sessionId: s.sessionId, agent: s.agent, startedAt: s.startedAt,
-          strategy: s.strategy, finalized: s.finalized, committed: s.committed,
-          steps: (s.steps || []).map((st) => ({
-            kind: st.kind, hash: st.dataHash ?? st.hash, txHash: st.txHash,
-            // keep DECISION payload — frontend reads verdict/confidence from it
-            ...(st.kind === "DECISION" ? { payload: st.payload } : {}),
-          })),
-        };
-      });
+    if (full) {
+      return json(res, loadSessions(limit), 200, req);
     }
-    return json(res, sessions);
+    const effectiveLimit = limit > 0 ? Math.min(limit, MAX_SLIM) : MAX_SLIM;
+    // slim + pre-computed gzip — avoids re-serializing thousands of sessions per request
+    const { items, gzip } = getSlimSessions(effectiveLimit);
+    const acceptGzip = req.headers["accept-encoding"]?.includes("gzip");
+    if (acceptGzip && gzip && (!limit || limit >= items.length)) {
+      res.writeHead(200, { "Content-Type": "application/json", "Content-Encoding": "gzip", "Access-Control-Allow-Origin": "*" });
+      return res.end(gzip);
+    }
+    return json(res, items, 200, req);
   }
 
   const sessionMatch = url.match(/^\/api\/sessions\/([^/]+)$/);
   if (req.method === "GET" && sessionMatch) {
     const record = loadSession(sessionMatch[1]);
-    return record ? json(res, record) : json(res, { error: "not found" }, 404);
+    return record ? json(res, record, 200, req) : json(res, { error: "not found" }, 404);
   }
 
   const verifyMatch = url.match(/^\/api\/verify\/([^/]+)$/);
