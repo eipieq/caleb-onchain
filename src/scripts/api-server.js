@@ -261,6 +261,7 @@ async function recoverSession(sessionId) {
 async function verifySession(sessionId) {
   const record = loadSession(sessionId);
   if (!record) return { error: "session not found", allPassed: false };
+  if (!record.steps || record.steps.length === 0) return { error: "no steps recorded", allPassed: false, steps: [] };
 
   const steps = [];
   let allPassed = true;
