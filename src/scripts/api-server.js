@@ -132,10 +132,14 @@ let slimCache = null;
 let slimCacheGzip = null;
 
 function slimSession(s) {
+  const decision = s.steps?.find((st) => st.kind === "DECISION");
+  const verdict = decision?.payload?.verdict ?? "SKIP";
+  const isSkip = verdict === "SKIP";
   return {
-    sessionId: s.sessionId, agent: s.agent, startedAt: s.startedAt,
-    strategy: s.strategy, finalized: s.finalized, committed: s.committed,
-    steps: (s.steps || []).map((st) => ({
+    sessionId: s.sessionId, startedAt: s.startedAt,
+    strategy: s.strategy,
+    // skip sessions: minimal footprint. trade sessions: full card data.
+    steps: isSkip ? [] : (s.steps || []).map((st) => ({
       kind: st.kind, hash: st.dataHash ?? st.hash, txHash: st.txHash,
       ...(st.kind === "DECISION" && st.payload ? { payload: {
         verdict: st.payload.verdict, confidence: st.payload.confidence,
@@ -146,19 +150,47 @@ function slimSession(s) {
   };
 }
 
+// session IDs that appear in trade history — these must always be included
+let tradeSessionIds = null;
+
+function loadTradeSessionIds() {
+  try {
+    if (!existsSync(PORTFOLIO_FILE)) return new Set();
+    const state = JSON.parse(readFileSync(PORTFOLIO_FILE, "utf8"));
+    return new Set((state.tradeHistory || []).map((t) => t.sessionId).filter(Boolean));
+  } catch { return new Set(); }
+}
+
 function getSlimSessions(limit) {
-  const sessions = loadSessions(limit);
+  // always load full cache first so slim cache covers all sessions
+  loadSessions(0);
+  // ensure trade session IDs are loaded
+  if (!tradeSessionIds) tradeSessionIds = loadTradeSessionIds();
   // rebuild slim cache if dirty
   if (!slimCache || slimCacheDirty) {
-    slimCache = sessions.map(slimSession);
-    slimCacheGzip = gzipSync(JSON.stringify(slimCache));
+    slimCache = sessionCache.map(slimSession);
     slimCacheDirty = false;
+    tradeSessionIds = loadTradeSessionIds(); // refresh on cache rebuild
   }
+  let items;
   if (limit > 0 && limit < slimCache.length) {
-    return { items: slimCache.slice(0, limit), gzip: null };
+    // take the first `limit` sessions, then append any trade sessions that fell outside
+    const capped = slimCache.slice(0, limit);
+    const includedIds = new Set(capped.map((s) => s.sessionId));
+    const missing = slimCache.filter((s) => tradeSessionIds.has(s.sessionId) && !includedIds.has(s.sessionId));
+    items = missing.length > 0 ? [...capped, ...missing] : capped;
+  } else {
+    items = slimCache;
   }
-  return { items: slimCache, gzip: slimCacheGzip };
+  // pre-compute gzip for this exact result
+  if (!slimCacheGzip || slimCacheDirty || slimCacheGzipLimit !== limit) {
+    slimCacheGzip = gzipSync(JSON.stringify(items));
+    slimCacheGzipLimit = limit;
+  }
+  return { items, gzip: slimCacheGzip };
 }
+
+let slimCacheGzipLimit = 0;
 
 let slimCacheDirty = true;
 
@@ -260,7 +292,7 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "GET" && url.match(/^\/api\/sessions(\?.*)?$/) && !url.match(/^\/api\/sessions\//)) {
     const params = new URL(url, "http://x").searchParams;
-    const MAX_SLIM = 2000; // cap slim responses — 5000+ sessions is 6MB+ and times out Vercel
+    const MAX_SLIM = 10000; // SKIP sessions are ~50 bytes each, trades ~1KB
     const limit = parseInt(params.get("limit") || "0");
     const full = params.get("full") === "1";
     if (full) {
