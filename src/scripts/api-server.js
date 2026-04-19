@@ -220,14 +220,14 @@ const server = createServer(async (req, res) => {
     // and the feed only needs verdict/confidence/reasoning. use ?full=1 for raw data.
     if (!full) {
       sessions = sessions.map((s) => {
-        const decision = s.steps?.find((st) => st.kind === "DECISION");
         return {
           sessionId: s.sessionId, agent: s.agent, startedAt: s.startedAt,
           strategy: s.strategy, finalized: s.finalized, committed: s.committed,
-          verdict: decision?.payload?.verdict, confidence: decision?.payload?.confidence,
-          reasoning: decision?.payload?.reasoning, token: decision?.payload?.token,
-          amountUsd: decision?.payload?.amountUsd,
-          steps: (s.steps || []).map((st) => ({ kind: st.kind, hash: st.dataHash ?? st.hash, txHash: st.txHash })),
+          steps: (s.steps || []).map((st) => ({
+            kind: st.kind, hash: st.dataHash ?? st.hash, txHash: st.txHash,
+            // keep DECISION payload — frontend reads verdict/confidence from it
+            ...(st.kind === "DECISION" ? { payload: st.payload } : {}),
+          })),
         };
       });
     }
