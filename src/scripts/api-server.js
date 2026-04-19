@@ -212,8 +212,26 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && url.match(/^\/api\/sessions(\?.*)?$/) && !url.match(/^\/api\/sessions\//)) {
-    const limit = parseInt(new URL(url, "http://x").searchParams.get("limit") || "0");
-    return json(res, loadSessions(limit));
+    const params = new URL(url, "http://x").searchParams;
+    const limit = parseInt(params.get("limit") || "0");
+    const full = params.get("full") === "1";
+    let sessions = loadSessions(limit);
+    // list endpoint returns slim sessions by default — step payloads are huge
+    // and the feed only needs verdict/confidence/reasoning. use ?full=1 for raw data.
+    if (!full) {
+      sessions = sessions.map((s) => {
+        const decision = s.steps?.find((st) => st.kind === "DECISION");
+        return {
+          sessionId: s.sessionId, agent: s.agent, startedAt: s.startedAt,
+          strategy: s.strategy, finalized: s.finalized, committed: s.committed,
+          verdict: decision?.payload?.verdict, confidence: decision?.payload?.confidence,
+          reasoning: decision?.payload?.reasoning, token: decision?.payload?.token,
+          amountUsd: decision?.payload?.amountUsd,
+          steps: (s.steps || []).map((st) => ({ kind: st.kind, hash: st.dataHash ?? st.hash, txHash: st.txHash })),
+        };
+      });
+    }
+    return json(res, sessions);
   }
 
   const sessionMatch = url.match(/^\/api\/sessions\/([^/]+)$/);
