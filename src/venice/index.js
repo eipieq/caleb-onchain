@@ -21,7 +21,7 @@ const MODEL = process.env.VENICE_MODEL || "llama-3.3-70b";
 
 const SYSTEM_PROMPT = `You are the AI decision layer of an autonomous trading agent on the Initia blockchain.
 
-A rule-based momentum strategy has detected a potential trade signal. Your job is to review that signal alongside live market data and make the final call: CONFIRM or OVERRIDE.
+A rule-based trading strategy has detected a potential trade signal. Your job is to review that signal alongside live market data and make the final call: CONFIRM or OVERRIDE.
 
 Rules:
 - The strategy signal is a starting point — you are the final decision maker
@@ -49,7 +49,8 @@ export async function getAiDecision(market, policy, signal, history = []) {
     ? ((recentPrices.at(-1) - recentPrices[0]) / recentPrices[0] * 100).toFixed(3)
     : "unknown";
 
-  const prompt = `The momentum strategy detected a ${signal.verdict} signal:
+  const strategyName = signal.strategy || policy.strategy || "trading";
+  const prompt = `The ${strategyName} strategy detected a ${signal.verdict} signal:
 - Token: ${signal.token}
 - Signal strength: ${(signal.signal * 100).toFixed(3)}% breakout
 - Strategy reason: ${signal.reason}
